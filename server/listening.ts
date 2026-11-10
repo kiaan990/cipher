@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { config } from "./config.js";
+import { targets } from "./targets.js";
 
 /**
  * Who and what the orb listens to:
@@ -139,9 +140,11 @@ class Listening {
 
   /** Words for Deepgram to listen out for, so the wake phrase is recognised reliably. */
   keyterms(): string[] {
-    if (!this.settings.wakeWord) return [];
-    const p = this.settings.wakePhrase.trim();
-    return p ? [p] : [];
+    const p = this.settings.wakeWord ? this.settings.wakePhrase.trim() : "";
+    // Names of apps and sites you use, so "open Figma" isn't heard as "open figure".
+    // Only nova-3 takes these hints, and only on your own Mac are there apps to name.
+    const names = config.deepgramModel.startsWith("nova-3") && !config.hosted && process.env.NAME_HINTS !== "false" ? targets.keyterms(40) : [];
+    return [...(p ? [p] : []), ...names];
   }
 
   // ---- voice match ----------------------------------------------------------------

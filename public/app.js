@@ -1279,6 +1279,17 @@ function onAction(a) {
   }
   row.title = [a.command, a.detail].filter(Boolean).join("\n\n");
   scrollTranscript();
+  if (a.kind === "job") {
+    // A background job: one row that follows it from start to finish.
+    text.textContent = `${a.status === "running" ? "In the background: " : a.status === "done" ? "Finished: " : "Stopped: "}${what} `;
+    if (a.status === "running" && a.detail) {
+      const now = document.createElement("code");
+      now.textContent = a.detail.slice(0, 80);
+      text.append(now);
+    }
+    if (a.status === "running" && row.dataset.flashed) return;
+    row.dataset.flashed = "1";
+  }
   if (a.status === "running") flashIsland(what.charAt(0).toUpperCase() + what.slice(1));
   if (a.status === "needs_approval") showApproval(a, what);
 }

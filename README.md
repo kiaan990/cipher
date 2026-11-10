@@ -169,11 +169,42 @@ Choose how much it may do in **Settings → Mac control**:
 **Safety details**
 - Deleting moves things to the Trash so you can undo it, unless you explicitly say "permanently".
 - Every action appears in the transcript (hover for the full command and output) and in the terminal.
-- Commands run as your user in your home folder, time out after 30 seconds, and are stopped if you interrupt Claude.
+- Commands run as your user in your home folder. One that takes more than a few seconds carries on as a background job (see below); it is stopped after 10 minutes, or when you say "cancel that".
 - The server only listens on this Mac (`127.0.0.1`) and refuses connections from other websites, so nothing else can reach the controls.
 - Anything Claude reads (files, web pages, the screen) is treated as information, never as instructions.
 
 **macOS permissions.** The first time Claude controls an app (Finder, Music…), macOS asks whether the app running `npm start` (Terminal, say) may control it: click OK. For screenshots, allow Screen Recording for that app in System Settings → Privacy & Security → Screen & System Audio Recording, then restart `npm start`.
+
+## Background jobs
+
+Cipher doesn't go quiet while something slow runs. Work that takes longer than a pause becomes a **job**: Cipher says it's running in the background, keeps talking with you, and tells you when it finishes.
+
+- **What becomes a job.** A Terminal command or AppleScript still running after 4 seconds, a cloud-server call still running after 8, and anything handed to Claude Code (below).
+- **Asking about it.** "What's running?", "how's that job going?", "what did job 3 do?". Jobs are numbered.
+- **Stopping it.** "Cancel that" stops the newest job; "cancel job 2" stops that one. The process is really stopped, not just forgotten.
+- **Finishing.** Cipher waits for a gap in the conversation, then says what happened in a sentence. A job that finishes while the page is closed is announced the next time you're there, once.
+- **On screen.** Each job has a row in the transcript ("In the background: …") showing what it's doing right now.
+
+Jobs are kept in `data/jobs.db`, so "what did that do?" still has an answer after a restart. A job that was running when the app restarted is marked interrupted and you're told.
+
+### Handing work to Claude Code
+
+For anything bigger than a couple of commands (writing or changing code, building something, digging through a project), Cipher hands the work to **Claude Code**, the coding agent installed on this Mac, as a job: "hand this to Claude Code: in ~/projects/site, add a contact page". You can follow up on a finished job ("on job 4, also add a test") and it remembers its earlier work.
+
+Limits, on purpose:
+- It works in one folder inside your home folder (a scratch folder, `~/Cipher Work`, if you don't name one). Never the home folder itself, Library, or settings folders such as `.ssh`.
+- In **Ask first** mode every hand-off needs your spoken OK. It's off when Mac control is off.
+- It runs with Claude Code's "accept edits" permissions and a fixed list of tools; `sudo`, the keychain and system tools are denied.
+- It gets none of Cipher's keys or the cloud server address: they are removed from its environment. It uses your own Claude Code sign-in.
+- Two at a time, 30 minutes each.
+
+### Checking names before acting
+
+Speech recognition mishears names, so Cipher checks what a name points at before acting on it:
+- **Apps.** "Open Figmaa" isn't opened blindly: if no such app is installed, Cipher offers the closest real names.
+- **Websites.** An address that doesn't exist is never opened. One Cipher hasn't opened before is confirmed with you once, out loud, then remembered (`data/known-targets.json`). Well-known sites skip the question.
+- **Hearing them right.** The names of your installed apps and the sites you've opened are given to speech recognition as words to listen for.
+- **Checking the result.** After opening an app or changing something, Cipher looks at what actually happened (is the app running? does the file exist?) before telling you it's done.
 
 ## Chrome control (email and the web)
 
@@ -284,6 +315,9 @@ voice-orb/
 │   ├── browser.ts     Chrome control: talks to the extension, browser tools and rules
 │   ├── appcontrol.ts  Voice control of the app itself (camera, mute, settings…)
 │   ├── approvals.ts   "Needs your OK" checks shared by Mac and Chrome control
+│   ├── jobs.ts        Background jobs: slow work that carries on while you talk (data/jobs.db)
+│   ├── delegate.ts    Hands bigger work to Claude Code as a background job
+│   ├── targets.ts     Checks app and website names before acting on them
 │   ├── version.ts     Lets open pages reload themselves after an update
 │   ├── net.ts         Kept-alive HTTPS connections for low latency
 │   ├── backchannel.ts listener sounds ("mm-hmm", "oh no", "sorry, go ahead"): made once, cached
@@ -326,6 +360,14 @@ All optional, in `.env`:
 | `DEEPGRAM_MODEL` | `nova-3` | |
 | `TTS_PROVIDER` | `auto` | `auto` uses ElevenLabs while it has credits, then switches to Deepgram's Aura voice (same Deepgram key). `elevenlabs` or `deepgram` forces one. |
 | `DEEPGRAM_VOICE` | `aura-2-thalia-en` | Any Deepgram Aura voice, e.g. `aura-2-asteria-en`. |
+| `JOB_AFTER_MS` | `4000` | How long a Mac command may run before it becomes a background job. |
+| `CLOUD_JOB_AFTER_MS` | `8000` | The same, for cloud-server calls. |
+| `DELEGATE_LIMIT_MIN` | `30` | Longest a job handed to Claude Code may run. |
+| `DELEGATE_MODEL` | Claude Code's own default | Model for handed-off work, e.g. `sonnet`. |
+| `DELEGATE_ALLOWED_TOOLS` | `Read,Edit,Write,Glob,Grep,Bash,WebSearch,WebFetch,TodoWrite` | Tools Claude Code may use without asking. |
+| `CLAUDE_BIN` | found automatically | Path to the `claude` command, if it isn't in a usual place. |
+| `CONFIRM_NEW_SITES` | `true` | `false` stops the one-time "did you mean…" check for websites Cipher hasn't opened before. |
+| `NAME_HINTS` | `true` | `false` stops giving app and site names to speech recognition. |
 | `PORT` | `3000` | |
 | `OPEN_BROWSER` | `true` | Set to `false` to stop `npm start` opening a tab. |
 

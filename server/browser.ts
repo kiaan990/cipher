@@ -6,6 +6,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import { ROOT_DIR, config } from "./config.js";
 import { approvals, type UserTurn } from "./approvals.js";
 import type { ActionEvent, ControlMode } from "./mac.js";
+import { targets } from "./targets.js";
 
 /**
  * Chrome control, through the "Cipher Bridge" extension in chrome-extension/.
@@ -258,6 +259,20 @@ class BrowserBridge {
       return result("Those element numbers may be out of date. Use browser_read on the tab first, then use a number from that reading.", true);
     }
 
+    // ---- is the site real, and one we've been to? (speech recognition mishears names)
+    const site = kind === "browser_open" && process.env.CONFIRM_NEW_SITES !== "false" ? targets.hostOf(String(input.url ?? "")) : "";
+    if (site) {
+      const known = await targets.check(site);
+      if (known === "missing") {
+        report({ ...event, status: "failed", detail: `there is no site at ${site}` });
+        return result(`Not opened: there is no website at ${site}, so the name was probably misheard. Ask the user which site they meant (say the name you heard).`, true);
+      }
+      if (known === "new" && !approvals.approved(`target\n${site}`, user)) {
+        report({ ...event, status: "needs_approval", detail: `${site} is a site you haven't opened with Cipher before` });
+        return result(`Not opened yet: ${site} hasn't been opened before, and names are easy to mishear. Ask the user in one short sentence whether they mean ${site} (say it clearly), then stop and wait. If they agree, call browser_open again with exactly the same input.`);
+      }
+    }
+
     // ---- policy
     const verdict = this.judge(kind, input, el, snap?.url ?? "", mode);
     if (verdict.action === "block") {
@@ -291,6 +306,7 @@ class BrowserBridge {
         this.lastTab = r.tabId;
         report({ ...event, status: "done", detail: r.title });
         this.remember(`opened ${hostOf(r.url)} (tab ${r.tabId})`);
+        if (site) targets.learn(site);
         return result(`Opened in tab ${r.tabId}: "${r.title}" (${r.url}). Use browser_read to see it.`);
       }
       if (kind === "browser_read") {
