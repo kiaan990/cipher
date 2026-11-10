@@ -107,7 +107,8 @@ class Cloud {
         this.client = null;
         this.lastError = (err as Error).message;
         this.retryAt = Date.now() + 60_000;
-        console.warn(`[cloud] couldn't connect to ${url.host}: ${this.lastError}`);
+        // The address is the only secret guarding the cloud server, so it never goes in the log.
+        console.warn(`[cloud] couldn't connect to the cloud server: ${this.lastError.replaceAll(url.host, "<cloud server>").replaceAll(url.pathname, "/<hidden>")}`);
         return false;
       } finally {
         this.connecting = null;

@@ -16,22 +16,27 @@ export interface UserTurn {
 }
 
 class Approvals {
-  private readonly pending = new Map<string, { at: number; userTurn: number }>();
+  /** The one question currently waiting for an answer. A newer question replaces it. */
+  private asked: { key: string; at: number; userTurn: number } | null = null;
 
-  /** True if `key` was asked about in an earlier turn and the user has now said yes. Otherwise records the question. */
+  /**
+   * True only if `key` is the question asked most recently, it was asked in the user's
+   * previous turn, and their very next words say yes. So a "yeah" can only ever answer
+   * the one thing Cipher just asked, never something older. Otherwise records the question.
+   */
   approved(key: string, user: UserTurn): boolean {
-    for (const [k, p] of this.pending) if (Date.now() - p.at > TTL_MS) this.pending.delete(k);
-    const asked = this.pending.get(key);
-    if (asked && user.turn > asked.userTurn && YES.test(user.text) && !NO.test(user.text)) {
-      this.pending.delete(key);
+    const a = this.asked;
+    if (a && a.key === key && Date.now() - a.at <= TTL_MS && user.turn === a.userTurn + 1 && YES.test(user.text) && !NO.test(user.text)) {
+      this.asked = null;
       return true;
     }
-    this.pending.set(key, { at: Date.now(), userTurn: user.turn });
+    // Asking again in the same turn (a retry) keeps the original question's turn.
+    if (!(a && a.key === key && a.userTurn === user.turn)) this.asked = { key, at: Date.now(), userTurn: user.turn };
     return false;
   }
 
   clear(): void {
-    this.pending.clear();
+    this.asked = null;
   }
 }
 

@@ -13,9 +13,10 @@ import { browser } from "./browser.js";
 import { cloud } from "./cloud.js";
 import { APP_TOOL, describeAppControl, runAppControl, type AppCommandResult } from "./appcontrol.js";
 import { randomUUID } from "node:crypto";
-import { AssistantTurn } from "./turn.js";
+import { AssistantTurn, warmModel } from "./turn.js";
 import { AudioTail, predictTurnComplete, smartTurnReady } from "./smartturn.js";
 import { backchannelClips, backchannelKinds, prepareBackchannels, CUE_ECHOES, type CueKind } from "./backchannel.js";
+import { phrases } from "./tts.js";
 import type { TurnOutput } from "./tts.js";
 import { listening, blendVoice } from "./listening.js";
 
@@ -36,12 +37,6 @@ export class ConversationStore {
     // Save conversations to disk shortly after they change, so a restart, crash or
     // reboot carries on where you left off.
     setInterval(() => this.save(), 3000).unref();
-    const saveAndExit = () => {
-      this.save();
-      process.exit(0);
-    };
-    process.once("SIGTERM", saveAndExit);
-    process.once("SIGINT", saveAndExit);
   }
 
   /** Note that a tab is using this conversation. (Several tabs may share one; dead connections are dropped by the ping check.) */
@@ -76,7 +71,8 @@ export class ConversationStore {
     }
   }
 
-  private save(): void {
+  /** Write conversations to disk now (also called on shutdown; see index.ts). */
+  save(): void {
     // Keep the 20 most recent conversations from the last 30 days.
     const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
     const keep = [...this.map.entries()]
@@ -199,6 +195,8 @@ export class VoiceSession {
   constructor(
     private readonly ws: WebSocket,
     private readonly history: Anthropic.MessageParam[],
+    /** True when this connection is the app's own page (not a local script). */
+    private readonly fromPage = false,
   ) {
     // Everything a reply sends goes through here, so it can be held back for a moment
     // while we find out whether the user is still talking (see `holdReply`).
@@ -210,7 +208,7 @@ export class VoiceSession {
     // Show the saved conversation again after a reload or restart.
     const past = this.history
       .filter((m) => typeof m.content === "string")
-      .map((m) => ({ role: m.role, text: String(m.content).replace(/\s*\[mood:[^\]]*\]\s*$/i, "").replace(/ … \[(interrupted by the user|reply cut off by an error)\]/g, " …").trim() }))
+      .map((m) => ({ role: m.role, text: String(m.content).replace(/\s*\[mood:[^\]]*\]\s*$/i, "").replace(/\s*\[did:[^\]]*\]/gi, "").replace(/ … \[(interrupted by the user|reply cut off by an error)\]/g, " …").trim() }))
       .filter((m) => m.text);
     if (past.length) this.send({ type: "history", messages: past.slice(-40) });
     this.sendMemory();
@@ -316,9 +314,28 @@ export class VoiceSession {
         }
         break;
       }
-      case "mac_mode":
-        mac.setMode(String(msg.mode) as ControlMode);
+      case "mac_mode": {
+        const mode = String(msg.mode) as ControlMode;
+        // Turning protection down ("full": act without asking) takes two steps and only
+        // works from the app's own page: the page must show its confirmation and send
+        // back the one-time code. Turning it up (ask / off) is always immediate.
+        if (mode === "full" && mac.mode !== "full") {
+          if (!this.fromPage) {
+            console.warn("[mac] refused a switch to full control that didn't come from the app's page");
+            this.send({ type: "mac", mode: mac.mode });
+            break;
+          }
+          if (!this.modeCode || msg.confirm !== this.modeCode) {
+            this.modeCode = crypto.randomUUID();
+            this.send({ type: "mac", mode: mac.mode });
+            this.send({ type: "mac_mode_confirm", mode, code: this.modeCode });
+            break;
+          }
+        }
+        this.modeCode = null;
+        mac.setMode(mode);
         break;
+      }
       case "say": {
         // A typed reply, e.g. from the Approve / Deny buttons on an action card.
         const text = String(msg.text ?? "").trim().slice(0, 500);
@@ -397,6 +414,9 @@ export class VoiceSession {
     this.active = true;
     this.dgRetries = 0;
     this.dgLastError = "";
+    // Get Claude's cache and the pre-recorded openers ready while the person is still drawing breath.
+    warmModel(this.toolContext());
+    void phrases.warm();
     this.openDeepgram();
     warmConnections();
     // The mic streams continuously (even when muted), so silence on the wire means the
@@ -750,8 +770,12 @@ export class VoiceSession {
       this.send({ type: "ignored" });
       return;
     }
-    // Focus mode: a new wake-up means a new speaker to lock onto.
-    if (wasAsleep) this.focusVoice = null;
+    // Focus mode: a new wake-up means a new speaker to lock onto. Saying the wake word
+    // at the start while it's awake does the same, so a second person can join in (and
+    // you're not locked out if it settled on the wrong voice). Voice match still applies.
+    const calledByName = !typed && !wasAsleep && Boolean(this.focusVoice) && listening.heardWakeWord(text.split(/\s+/).slice(0, 4).join(" "));
+    if (calledByName) console.log(`[focus] wake word at the start: listening to this speaker now`);
+    if (wasAsleep || calledByName) this.focusVoice = null;
     const gated = !typed && (listening.voiceMatchActive || listening.focusActive);
     const voice = gated ? this.tail.snapshot() : null;
     this.tail.clear(); // the next check should only hear the next turn
@@ -1104,8 +1128,7 @@ export class VoiceSession {
         image,
         sceneNote: this.vision.describe(),
         memoryNote: memory.describe(),
-        macNote: [describeAppControl(), mac.describe(), browser.describe(mac.mode), cloud.describe()].filter(Boolean).join("\n\n"),
-        tools: [APP_TOOL, ...(mac.tools ?? []), ...browser.tools(mac.mode), ...cloud.tools()],
+        ...this.toolContext(),
         preamble: (call) => (cloud.owns(call.name) ? cloud.preamble(call.name) : undefined),
         runTool: async (call, signal) => {
           // Nothing happens on the Mac or in Chrome until the voice check has passed.
@@ -1139,6 +1162,17 @@ export class VoiceSession {
         if (spoken) this.pushAssistant(turn, { role: "assistant", content: turn.historyText(spoken + FAILED_NOTE) });
       }
     });
+  }
+
+  /** What Claude is told it can control, and the tools for it (the cached part of every request). */
+  /** One-time code the page must echo to confirm a switch to full control. */
+  private modeCode: string | null = null;
+
+  private toolContext(): { macNote: string; tools: Anthropic.Tool[] } {
+    return {
+      macNote: [describeAppControl(), mac.describe(), browser.describe(mac.mode), cloud.describe()].filter(Boolean).join("\n\n"),
+      tools: [APP_TOOL, ...(mac.tools ?? []), ...browser.tools(mac.mode), ...cloud.tools()],
+    };
   }
 
   /** Voice match said it wasn't you: drop the reply and the words, as if never heard. */

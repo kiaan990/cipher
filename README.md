@@ -315,7 +315,7 @@ All optional, in `.env`:
 
 | Variable | Default | Notes |
 | --- | --- | --- |
-| `ANTHROPIC_MODEL` | `claude-haiku-4-5` | `claude-haiku-5-5` is newer and a little smarter, but starts replies about 120 ms later. |
+| `ANTHROPIC_MODEL` | `claude-haiku-4-5` | `claude-haiku-5-5` is newer. Measured here (`npm run test:models`): its first word arrives no sooner (about 505 ms against 510 ms) and it writes about twice as much, so spoken replies start slightly later. |
 | `ELEVENLABS_VOICE_ID` | `FGY2WhTYpPnrIDTdsKH5` (Laura) | Any voice ID your plan allows. Free plans can only use ElevenLabs' default voices over the API, not library voices. |
 | `ELEVENLABS_MODEL_ID` | `eleven_flash_v2_5` | Flash is the lowest-latency model. |
 | `ELEVENLABS_STABILITY` | `0.38` | 0–1. Lower is more expressive and human; higher is steadier. |
@@ -330,6 +330,16 @@ All optional, in `.env`:
 | `OPEN_BROWSER` | `true` | Set to `false` to stop `npm start` opening a tab. |
 
 Interruption sensitivity and pauses are constants at the top of `public/app.js` (`BARGE_IN_MS`, `SENTENCE_GAP_S`, …). Turn-end timing is in `server/deepgram.ts` (`endpointing`, `utterance_end_ms`).
+
+## Testing
+
+With the app running:
+
+- `npm test` plays the recorded questions in `tests/audio/talk` at the app and prints, for each, how long it took from the end of speech to the first sound of the reply. Results are saved in `tests/out`.
+- `node tests/run.mjs tasks` plays the task recordings. These really act on this Mac (open apps, add reminders), so run them on purpose.
+- `node tests/run.mjs real` plays your own recordings: put 16 kHz mono 16-bit WAV files in `tests/audio/real`.
+- `npm run test:models` compares how quickly two Claude models produce their first word.
+- `PORT=3001 npm test` aims the tests at a second copy of the app on another port.
 
 ## Troubleshooting
 

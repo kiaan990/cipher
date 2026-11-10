@@ -290,6 +290,12 @@ function onJson(msg) {
       macMode = msg.mode;
       renderMac();
       break;
+    case "mac_mode_confirm":
+      // The server asks before lowering protection; only a yes here sends the code back.
+      if (confirm("Let Cipher act on your Mac and in Chrome without asking first? It will still ask before sending, buying, deleting or shutting down.")) {
+        send({ type: "mac_mode", mode: msg.mode, confirm: msg.code });
+      }
+      break;
     case "action":
       onAction(msg);
       break;
@@ -1241,7 +1247,10 @@ function renderMac() {
 macEls.seg.addEventListener("click", (e) => {
   const b = e.target.closest("button");
   if (!b || b.dataset.value === macMode) return;
-  if (b.dataset.value === "full" && !confirm("Let Cipher act on your Mac and in Chrome without asking first? It will still ask before sending, buying, deleting or shutting down.")) return;
+  if (b.dataset.value === "full") {
+    send({ type: "mac_mode", mode: "full" }); // the server replies asking for confirmation
+    return;
+  }
   macMode = b.dataset.value;
   send({ type: "mac_mode", mode: macMode });
   renderMac();

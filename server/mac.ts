@@ -20,7 +20,7 @@ import { approvals, type UserTurn } from "./approvals.js";
  */
 
 export type ControlMode = "off" | "ask" | "full";
-type Kind = "run_command" | "run_applescript" | "take_screenshot";
+type Kind = "run_command" | "run_applescript" | "take_screenshot" | "mac_state";
 
 export interface ActionEvent {
   id: string;
@@ -67,7 +67,16 @@ export const MAC_TOOLS: Anthropic.Tool[] = [
     description: "Capture the Mac's main screen to see what's on it, e.g. when the user asks about something on their screen.",
     input_schema: { type: "object", properties: {} },
   },
+  {
+    name: "mac_state",
+    description:
+      "A quick, free look at the Mac right now: whether the screen is locked, which app is in front, which apps have windows open, light or dark mode, the volume, and power or battery. Prefer this over a screenshot or a command when it answers the question.",
+    input_schema: { type: "object", properties: {} },
+  },
 ];
+
+/** Things that need an unlocked screen: looking at it, or clicking and typing in apps. */
+const NEEDS_SCREEN = /\bSystem Events\b|\bkeystroke\b|\bkey code\b|\bclick\b|\bscreencapture\b/i;
 
 // ---- policy -----------------------------------------------------------------------------
 
@@ -203,8 +212,9 @@ class MacControl {
       return "You can't control the user's computer right now. If they ask you to do something on their Mac, tell them to turn on Mac control in Settings.";
     }
     const lines = [
-      `You can control the user's Mac (macOS, user "${os.userInfo().username}") with tools: run_command (zsh), run_applescript and take_screenshot. Use them when the user asks you to do something on their computer or asks about it.`,
-      "- When you start doing something, including right after the user approves it, first say one very short line such as \"Sure, opening Safari.\" or \"On it.\" It's spoken aloud while you work. For a task with several steps, say it once at the start; don't narrate each step. Afterwards, say briefly what happened in plain speech. Never read out raw output, long paths or code.",
+      `You can control the user's Mac (macOS, user "${os.userInfo().username}") with tools: run_command (zsh), run_applescript, take_screenshot and mac_state. Use them when the user asks you to do something on their computer or asks about it.`,
+      "- Don't announce what you're about to do, including right after the user approves it: call the tool straight away (the app covers the wait). For a task with several steps, do them all without narrating. Afterwards, say briefly what happened in plain speech. Never read out raw output, long paths or code.",
+      "- For what's in front, which apps are open, the volume, dark mode, battery or whether the screen is locked, use mac_state: it's instant.",
       "- Prefer the simplest way: `open -a \"App Name\"` for apps, `open https://…` for websites, `open ~/Desktop` for folders. To find files, use mdfind or ls.",
       "- To delete files or folders, move them to the Trash (`mv <path> ~/.Trash/`) so it can be undone. Only delete permanently if the user explicitly says so.",
       "- Never use sudo, never read saved passwords, and never use the Calendar or Reminders apps: those are off limits.",
@@ -239,7 +249,13 @@ class MacControl {
     });
 
     if (this.mode === "off" || config.hosted) return result("Mac control is turned off.", true);
-    if (!["run_command", "run_applescript", "take_screenshot"].includes(kind)) return result(`Unknown tool ${kind}.`, true);
+    if (!["run_command", "run_applescript", "take_screenshot", "mac_state"].includes(kind)) return result(`Unknown tool ${kind}.`, true);
+    if (kind === "mac_state") {
+      report({ ...event, purpose: "check the Mac", status: "running" });
+      const state = await macState(signal);
+      report({ ...event, purpose: "check the Mac", status: "done", detail: state.slice(0, 300) });
+      return result(state);
+    }
     if (kind !== "take_screenshot" && !command.trim()) return result("Empty command.", true);
 
     const verdict =
@@ -258,6 +274,12 @@ class MacControl {
           `Not run yet: this needs the user's OK because ${verdict.reason}. Ask them in one short sentence, saying plainly what it will do, then stop and wait for their answer.`,
         );
       }
+    }
+
+    // A locked screen shows nothing and takes no clicks; say so instead of failing oddly.
+    if ((kind === "take_screenshot" || NEEDS_SCREEN.test(command)) && (await screenLocked(signal))) {
+      report({ ...event, status: "blocked", detail: "the screen is locked" });
+      return result("The Mac's screen is locked, so nothing on it can be seen or clicked. Tell the user to unlock it first.", true);
     }
 
     report(event);
@@ -291,11 +313,52 @@ class MacControl {
   }
 }
 
+/** True when the Mac is at the lock screen (or the login window). */
+async function screenLocked(signal: AbortSignal): Promise<boolean> {
+  try {
+    const out = await exec("/usr/sbin/ioreg", ["-n", "Root", "-d1"], undefined, signal, 3000);
+    return /"CGSSessionScreenIsLocked"\s*=\s*Yes/.test(out.output);
+  } catch {
+    return false; // can't tell: let the action try
+  }
+}
+
+/** A few cheap facts about the Mac, gathered at once. None of them needs a permission. */
+async function macState(signal: AbortSignal): Promise<string> {
+  const quick = (file: string, args: string[]) =>
+    exec(file, args, undefined, signal, 3000).then(
+      (o) => o.output.trim(),
+      () => "",
+    );
+  const [locked, front, visible, dark, volume, power] = await Promise.all([
+    screenLocked(signal),
+    quick("/bin/zsh", ["-c", 'lsappinfo info -only name "$(lsappinfo front)"']),
+    quick("/usr/bin/lsappinfo", ["visibleProcessList"]),
+    quick("/usr/bin/defaults", ["read", "-g", "AppleInterfaceStyle"]),
+    quick("/usr/bin/osascript", ["-e", "get volume settings"]),
+    quick("/usr/bin/pmset", ["-g", "batt"]),
+  ]);
+  const names = (text: string) => [...text.matchAll(/"([^"]+)"/g)].map((m) => m[1].replace(/_/g, " ")).filter((n) => n !== "LSDisplayName");
+  const vol = /output volume:(\d+)/.exec(volume);
+  const muted = /output muted:true/.test(volume);
+  const battery = /(\d+)%;\s*([a-z ]+);/i.exec(power);
+  const lines = [
+    `Screen: ${locked ? "locked" : "unlocked"}`,
+    `App in front: ${names(front)[0] ?? "unknown"}`,
+    `Apps with windows open: ${[...new Set(names(visible))].join(", ") || "unknown"}`,
+    `Appearance: ${/dark/i.test(dark) ? "dark" : "light"} mode`,
+    `Volume: ${vol ? `${vol[1]}%${muted ? " (muted)" : ""}` : "unknown"}`,
+    `Power: ${battery ? `battery ${battery[1]}%, ${battery[2].trim()}` : /AC Power/.test(power) ? "plugged in (no battery)" : "unknown"}`,
+  ];
+  return lines.join("\n");
+}
+
 function exec(
   file: string,
   args: string[],
   stdin: string | undefined,
   signal: AbortSignal,
+  timeoutMs = TIMEOUT_MS,
 ): Promise<{ code: number; output: string; timedOut: boolean }> {
   return new Promise((resolve, reject) => {
     const child = spawn(file, args, { cwd: os.homedir(), detached: true, stdio: ["pipe", "pipe", "pipe"] });
@@ -316,7 +379,7 @@ function exec(
     const timer = setTimeout(() => {
       timedOut = true;
       kill();
-    }, TIMEOUT_MS);
+    }, timeoutMs);
     const onAbort = () => kill();
     signal.addEventListener("abort", onAbort, { once: true });
     child.on("error", (err) => {

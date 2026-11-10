@@ -10,7 +10,9 @@
   "scripts": {
     "start": "tsx server/index.ts",
     "dev": "tsx watch server/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node tests/run.mjs",
+    "test:models": "tsx tests/first-token.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.5.0",

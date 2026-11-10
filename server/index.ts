@@ -1,3 +1,4 @@
+import "./log.js"; // first: puts a timestamp on every log line
 import http from "node:http";
 import path from "node:path";
 import { exec } from "node:child_process";
@@ -93,7 +94,7 @@ const store = new ConversationStore();
 wss.on("connection", (ws, req) => {
   const url = new URL(req.url ?? "/ws", "http://localhost");
   const sessionId = (url.searchParams.get("session") || "default").slice(0, 64);
-  const session = new VoiceSession(ws, store.get(sessionId));
+  const session = new VoiceSession(ws, store.get(sessionId), Boolean(req.headers.origin));
   store.claim(sessionId, session);
 
   // Detect dead connections so the browser's reconnect logic can kick in.
@@ -137,6 +138,42 @@ server.listen(config.port, config.hosted ? "0.0.0.0" : "127.0.0.1", () => {
     const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start \"\"" : "xdg-open";
     exec(`${cmd} ${url}`, () => {});
   }
+});
+
+// Stopping cleanly: save the conversation, tell open pages we're going (they reconnect
+// on their own), stop taking connections, then leave. Runs once, whatever the cause.
+let closing = false;
+function shutdown(why: string, code: number): void {
+  if (closing) return;
+  closing = true;
+  console.log(`[server] stopping (${why})`);
+  try {
+    store.save();
+  } catch (err) {
+    console.error(`[server] couldn't save conversations: ${(err as Error).message}`);
+  }
+  for (const ws of [...wss.clients, ...extWss.clients]) {
+    try {
+      ws.close(1001, "server restarting");
+    } catch {
+      /* already gone */
+    }
+  }
+  server.close();
+  setTimeout(() => process.exit(code), 300).unref();
+}
+process.once("SIGTERM", () => shutdown("SIGTERM", 0));
+process.once("SIGINT", () => shutdown("SIGINT", 0));
+process.once("SIGHUP", () => shutdown("SIGHUP", 0));
+// A bug that escapes everything else: write down what happened, save, and exit so
+// launchd starts a fresh copy, rather than limping on in an unknown state.
+process.on("uncaughtException", (err) => {
+  console.error(`[server] crashed: ${err?.stack ?? err}`);
+  shutdown("crash", 1);
+});
+// A failed background task (a dropped network call, say) shouldn't take the app down.
+process.on("unhandledRejection", (reason) => {
+  console.error(`[server] unhandled rejection: ${(reason as Error)?.stack ?? reason}`);
 });
 
 server.on("error", (err: NodeJS.ErrnoException) => {
