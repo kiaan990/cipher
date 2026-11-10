@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#06070c" />
+    <!-- Installable web app (Chrome "Install", iPhone "Add to Home Screen") -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Cipher" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="color-scheme" content="dark" />
+    <title>Cipher</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><defs><radialGradient id='g' cx='40%' cy='35%'><stop offset='0' stop-color='%23cfe3ff'/><stop offset='.55' stop-color='%236f9dff'/><stop offset='1' stop-color='%232a3a8f'/></radialGradient></defs><circle cx='16' cy='16' r='13' fill='url(%23g)'/></svg>" />
+    <link rel="stylesheet" href="styles.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "/vendor/three/build/three.module.min.js",
+          "three/addons/": "/vendor/three/examples/jsm/"
+        }
+      }
+    </script>
+  </head>
+  <body data-state="idle" data-mood="calm" data-conn="connecting">
+    <canvas id="orb" aria-label="Animated voice orb. Tap to start or interrupt; drag to spin." role="img"></canvas>
+
+    <!-- Top bar -->
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-name">Cipher</span>
+        <span class="brand-sub">Voice</span>
+      </div>
+
+      <div id="island" class="island" role="status" aria-live="polite">
+        <span class="island-dot" aria-hidden="true"></span>
+        <span id="islandState" class="island-state">Connecting</span>
+        <span class="island-sep" aria-hidden="true"></span>
+        <span class="island-mood"><span class="mood-swatch" aria-hidden="true"></span><span id="islandMood">Calm</span></span>
+        <span id="islandMeta" class="island-meta" hidden></span>
+      </div>
+
+      <nav class="top-actions" aria-label="Panels">
+        <button id="transcriptBtn" class="icon-btn" aria-label="Transcript" aria-expanded="false" aria-controls="transcriptSheet" data-tip="Transcript" data-key="T">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.2 3.6c-.5.4-1.3.1-1.3-.6V16A2.5 2.5 0 0 1 4 13.5v-8Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M8 8.5h8M8 11.5h5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+          <span id="transcriptBadge" class="badge" hidden></span>
+        </button>
+        <button id="settingsBtn" class="icon-btn" aria-label="Settings" aria-expanded="false" aria-controls="settingsPop" data-tip="Settings" data-key=",">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="15" cy="7" r="2.2" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="9" cy="17" r="2.2" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
+        </button>
+        <button id="helpBtn" class="icon-btn" aria-label="Keyboard shortcuts" aria-expanded="false" aria-controls="helpPop" data-tip="Shortcuts" data-key="?">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="12" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M7 10h.01M10.5 10h.01M14 10h.01M17 10h.01M8 14h8" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>
+        </button>
+      </nav>
+    </header>
+
+    <!-- Missing keys -->
+    <section id="setup" class="setup glass" hidden aria-labelledby="setupTitle">
+      <div class="setup-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><circle cx="8" cy="15" r="4" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="m11 12 8-8M16 7l2.5 2.5M14 9l2 2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+      </div>
+      <h2 id="setupTitle">Add your API keys</h2>
+      <p>Put the missing keys in the <code>.env</code> file in the project folder, then restart with <code>npm start</code>.</p>
+      <ul id="keyList" class="key-list"></ul>
+    </section>
+
+    <!-- Live captions -->
+    <section id="captions" class="captions" aria-live="polite" aria-label="Live captions">
+      <p class="caption user" data-empty="true"><span class="who">You</span><span id="userCaption" class="text"></span></p>
+      <p class="caption assistant" data-empty="true"><span class="who">Cipher</span><span id="assistantCaption" class="text"></span></p>
+    </section>
+
+    <p id="hint" class="hint" aria-live="polite"></p>
+
+    <!-- Camera preview (frames never leave the browser) -->
+    <section id="camTile" class="cam-tile glass" hidden aria-label="Camera preview">
+      <div class="cam-frame">
+        <video id="camVideo" playsinline muted></video>
+        <canvas id="camOverlay"></canvas>
+        <div id="camLoading" class="cam-loading" hidden>
+          <span class="cam-scan" aria-hidden="true"></span>
+          <span id="camLoadingText">Loading vision model</span>
+          <span class="cam-bar"><span id="camBar"></span></span>
+        </div>
+      </div>
+      <footer class="cam-foot">
+        <span class="cam-dot" aria-hidden="true"></span>
+        <span id="camSees" class="cam-sees">Starting camera…</span>
+        <span id="camMs" class="cam-ms"></span>
+      </footer>
+    </section>
+
+    <!-- Controls -->
+    <footer class="dock glass" role="toolbar" aria-label="Conversation controls">
+      <button id="cameraBtn" class="dock-btn cam-btn" aria-pressed="false" aria-label="Turn camera on" data-tip="Camera" data-key="V">
+        <svg class="ico cam-on" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6.5" width="13" height="11" rx="2.8" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m16 10.6 4.1-2.5c.4-.2.9.1.9.5v6.8c0 .4-.5.7-.9.5L16 13.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+        <span class="cam-live" aria-hidden="true"></span>
+      </button>
+
+      <button id="muteBtn" class="dock-btn" aria-pressed="false" disabled aria-label="Mute microphone" data-tip="Mute" data-key="M">
+        <svg class="level-ring" viewBox="0 0 52 52" aria-hidden="true"><circle cx="26" cy="26" r="24.5" pathLength="100"/></svg>
+        <svg class="ico mic-on" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" fill="currentColor"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/></svg>
+        <svg class="ico mic-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 10.5V6a3 3 0 0 0-5.8-1.1M9 9v2a3 3 0 0 0 4.6 2.5M5.5 11a6.5 6.5 0 0 0 10.3 5.3M18.5 11c0 .9-.2 1.8-.5 2.6M12 17.5V21M4 4l16 16" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/></svg>
+      </button>
+
+      <button id="sessionBtn" class="call-btn" aria-label="Start conversation" data-tip="Start conversation" data-key="Space">
+        <span class="call-glow" aria-hidden="true"></span>
+        <svg class="ico start" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h1.5M7.5 8v8M11 5v14M14.5 8.5v7M18 10.5v3M20.5 12h-.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <svg class="ico end" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+        <span class="spinner" aria-hidden="true"></span>
+        <span id="sessionLabel" class="call-label">Start</span>
+      </button>
+
+      <button id="stopBtn" class="dock-btn" disabled aria-label="Stop Cipher talking" data-tip="Stop Cipher" data-key="Esc">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2.2" fill="currentColor"/></svg>
+      </button>
+    </footer>
+
+    <!-- Transcript sheet -->
+    <aside id="transcriptSheet" class="sheet glass" aria-label="Transcript" aria-hidden="true" inert>
+      <header class="sheet-head">
+        <h2>Transcript</h2>
+        <div class="sheet-actions">
+          <button id="copyBtn" class="text-btn" disabled>Copy</button>
+          <button id="clearBtn" class="text-btn danger" disabled>New chat</button>
+          <button id="closeSheetBtn" class="icon-btn small" aria-label="Close transcript">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7 7 17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+      </header>
+      <ol id="transcriptList" class="transcript"></ol>
+      <div id="transcriptEmpty" class="transcript-empty">
+        <span class="empty-orb" aria-hidden="true"></span>
+        <p>Your conversation will appear here.</p>
+      </div>
+    </aside>
+
+    <!-- Settings -->
+    <div id="settingsPop" class="popover glass" role="dialog" aria-label="Settings" hidden>
+      <h3>Settings</h3>
+      <div class="field">
+        <span class="field-label">Interrupt sensitivity</span>
+        <div class="segmented" data-setting="sensitivity" role="radiogroup" aria-label="Interrupt sensitivity">
+          <span class="seg-thumb" aria-hidden="true"></span>
+          <button role="radio" data-value="low">Low</button>
+          <button role="radio" data-value="normal">Normal</button>
+          <button role="radio" data-value="high">High</button>
+        </div>
+        <span class="field-help">Low suits speakers; High cuts in fastest with headphones.</span>
+      </div>
+      <div class="field">
+        <span class="field-label">Visual effects</span>
+        <div class="segmented" data-setting="quality" role="radiogroup" aria-label="Visual effects">
+          <span class="seg-thumb" aria-hidden="true"></span>
+          <button role="radio" data-value="full">Full</button>
+          <button role="radio" data-value="lite">Lite</button>
+        </div>
+      </div>
+      <div class="field">
+        <span class="field-label">Vision model</span>
+        <div class="segmented" data-setting="vision" role="radiogroup" aria-label="Vision model">
+          <span class="seg-thumb" aria-hidden="true"></span>
+          <button role="radio" data-value="fast">Fast</button>
+          <button role="radio" data-value="accurate">Accurate</button>
+        </div>
+        <span class="field-help">Object detection runs on your device. Accurate is slower and a bigger one-time download.</span>
+      </div>
+      <label class="toggle-row">
+        <span>Cipher sees camera stills</span>
+        <input type="checkbox" class="switch" data-setting="stills" />
+      </label>
+      <span class="field-help field-help-row">While the camera is on, one small still goes to Claude (the AI behind Cipher) with each thing you say, so it can see what you're holding, read text and see colours. Not stored. Turn off to keep video fully on this Mac.</span>
+      <label class="toggle-row">
+        <span>Floating words</span>
+        <input type="checkbox" class="switch" data-setting="words" />
+      </label>
+      <label class="toggle-row">
+        <span>Live captions</span>
+        <input type="checkbox" class="switch" data-setting="captions" />
+      </label>
+      <div class="pop-divider"></div>
+      <div class="listening">
+        <span class="field-label">Listening</span>
+        <label class="toggle-row">
+          <span>Noise filter</span>
+          <input type="checkbox" class="switch" data-setting="noiseFilter" />
+        </label>
+        <span class="field-help field-help-row">Removes background sound (fans, typing, traffic, TV hum) before anything hears it. Runs in this browser.</span>
+        <label class="toggle-row">
+          <span>Wake word</span>
+          <input type="checkbox" class="switch" id="wakeToggle" />
+        </label>
+        <div class="wake-row" id="wakeRow">
+          <input type="text" id="wakePhrase" class="text-input" maxlength="40" spellcheck="false" autocomplete="off" aria-label="Wake phrase" placeholder="Cipher" />
+          <div class="segmented compact" id="wakeAwake" role="radiogroup" aria-label="Stay awake for">
+            <span class="seg-thumb" aria-hidden="true"></span>
+            <button role="radio" data-value="10">10 s</button>
+            <button role="radio" data-value="15">15 s</button>
+            <button role="radio" data-value="30">30 s</button>
+            <button role="radio" data-value="60">1 min</button>
+          </div>
+        </div>
+        <span class="field-help field-help-row">Ignores everything until you say the phrase, then stays awake for the time chosen after each reply.</span>
+        <label class="toggle-row" id="focusRow">
+          <span>Focus on whoever says it</span>
+          <input type="checkbox" class="switch" id="focusToggle" />
+        </label>
+        <span class="field-help field-help-row">After the wake word, it follows only that person's voice, so other people and the TV can't butt in or cut it off. Nothing to record. (Only my voice, when set up, takes over.)</span>
+        <label class="toggle-row">
+          <span>Only my voice</span>
+          <input type="checkbox" class="switch" id="voiceToggle" />
+        </label>
+        <div class="voice-row" id="voiceRow">
+          <div class="segmented compact" id="voiceStrict" role="radiogroup" aria-label="How strict">
+            <span class="seg-thumb" aria-hidden="true"></span>
+            <button role="radio" data-value="relaxed">Relaxed</button>
+            <button role="radio" data-value="normal">Normal</button>
+            <button role="radio" data-value="strict">Strict</button>
+          </div>
+          <div class="voice-actions">
+            <button id="voiceEnrollBtn" class="chip-btn">Teach it my voice</button>
+            <button id="voiceForgetBtn" class="chip-btn" hidden>Forget my voice</button>
+          </div>
+        </div>
+        <span class="field-help field-help-row" id="voiceHelp">Answers only you: other people and the TV are ignored. Read three sentences once so it learns your voice. Kept only on this Mac.</span>
+      </div>
+      <div class="pop-divider"></div>
+      <div class="field local-only">
+        <span class="field-label">Mac &amp; Chrome control</span>
+        <div class="segmented" id="macMode" role="radiogroup" aria-label="Mac and Chrome control">
+          <span class="seg-thumb" aria-hidden="true"></span>
+          <button role="radio" data-value="off">Off</button>
+          <button role="radio" data-value="ask">Ask first</button>
+          <button role="radio" data-value="full">Full</button>
+        </div>
+        <span class="field-help" id="macHelp"></span>
+      </div>
+      <div class="perms local-only">
+        <div class="perms-head">
+          <span>Mac permissions</span>
+          <button id="permsCheck" class="chip-btn">Check</button>
+        </div>
+        <ul id="permsList" class="perms-list" hidden>
+          <li data-perm="automation"><span class="perm-dot"></span><span>Control apps (Automation)</span><button class="chip-btn">Set up</button></li>
+          <li data-perm="accessibility"><span class="perm-dot"></span><span>Click and type (Accessibility)</span><button class="chip-btn">Set up</button></li>
+          <li data-perm="screen"><span class="perm-dot"></span><span>See the screen (Screen Recording)</span><button class="chip-btn">Set up</button></li>
+        </ul>
+        <span class="field-help" id="permsHelp" hidden>In System Settings, switch on <b>node</b>. After turning on Screen Recording, <button id="permsRestart" class="chip-btn">Restart Cipher</button> so it takes effect.</span>
+      </div>
+      <div class="chrome-ext local-only">
+        <div class="chrome-row">
+          <span class="chrome-dot" id="chromeDot" aria-hidden="true"></span>
+          <span id="chromeStatus">Chrome extension: not connected</span>
+        </div>
+        <details id="chromeSetup">
+          <summary>Set up Chrome</summary>
+          <ol>
+            <li>In Chrome, open <code>chrome://extensions</code> and turn on <b>Developer mode</b>.</li>
+            <li>Click <b>Load unpacked</b> and pick the <code>chrome-extension</code> folder inside <code>voice-orb</code>.</li>
+            <li>Click the extension's icon, paste this pairing code, and press Connect:</li>
+          </ol>
+          <div class="chrome-code"><code id="chromeCode">…</code><button id="chromeCopy" class="chip-btn">Copy</button></div>
+        </details>
+      </div>
+      <div class="memory">
+        <label class="toggle-row">
+          <span>Memory <span id="memoryCount" class="memory-count"></span></span>
+          <input type="checkbox" class="switch" id="memoryToggle" />
+        </label>
+        <span class="field-help">Cipher remembers things about you between conversations. Saved only on this Mac. Say "forget that" or remove items here.</span>
+        <ul id="memoryList" class="memory-list" aria-label="What Cipher remembers"></ul>
+        <button id="memoryClear" class="row-btn" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+          Forget everything
+        </button>
+      </div>
+      <div class="pop-divider"></div>
+      <button id="newChatBtn" class="row-btn">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.4-5.7M4 4v4h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+        Start a new conversation
+      </button>
+      <a href="/logout" class="row-btn hosted-only signout">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 16l-4-4 4-4M6 12h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+        Sign out
+      </a>
+    </div>
+
+    <!-- Shortcuts -->
+    <div id="helpPop" class="popover glass" role="dialog" aria-label="Keyboard shortcuts" hidden>
+      <h3>Shortcuts</h3>
+      <dl class="shortcuts">
+        <div><dt>Start or end</dt><dd><kbd>Space</kbd></dd></div>
+        <div><dt>Mute microphone</dt><dd><kbd>M</kbd></dd></div>
+        <div><dt>Camera on or off</dt><dd><kbd>V</kbd></dd></div>
+        <div><dt>Stop Cipher talking</dt><dd><kbd>Esc</kbd></dd></div>
+        <div><dt>Transcript</dt><dd><kbd>T</kbd></dd></div>
+        <div><dt>Settings</dt><dd><kbd>,</kbd></dd></div>
+        <div><dt>This list</dt><dd><kbd>?</kbd></dd></div>
+      </dl>
+      <p class="pop-note">Tap the orb to start or interrupt. Drag it to spin.</p>
+    </div>
+
+    <!-- Voice match: reading sentences so it learns your voice -->
+    <section id="enroll" class="enroll glass" hidden role="dialog" aria-labelledby="enrollTitle">
+      <h4 id="enrollTitle">Read these out loud, at your normal volume</h4>
+      <ol class="enroll-lines">
+        <li>The quick brown fox jumps over the lazy dog near the riverbank.</li>
+        <li>I'd like to check my email, then play some music while I cook dinner.</li>
+        <li>Every voice is a little different, and this helps you recognise mine.</li>
+      </ol>
+      <span class="enroll-bar"><span id="enrollBar"></span></span>
+      <div class="approval-actions">
+        <button id="enrollCancel" class="btn-secondary">Cancel</button>
+        <button id="enrollDone" class="btn-primary">Done</button>
+      </div>
+    </section>
+
+    <!-- Cipher wants to do something on the Mac that needs your OK -->
+    <section id="approval" class="approval glass" hidden role="alertdialog" aria-labelledby="approvalTitle">
+      <div class="approval-head">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2.5" stroke="currentColor" stroke-width="1.7" fill="none"/><path d="M8 21h8M12 17v4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+        <div>
+          <h4 id="approvalTitle">Cipher wants to <span id="approvalPurpose"></span></h4>
+          <p id="approvalReason"></p>
+        </div>
+      </div>
+      <pre id="approvalCommand" class="approval-cmd"></pre>
+      <div class="approval-actions">
+        <button id="approvalDeny" class="btn-secondary">Don't</button>
+        <button id="approvalAllow" class="btn-primary">Approve</button>
+      </div>
+      <span class="approval-hint">Or just say "yes" or "no".</span>
+    </section>
+
+    <div id="toasts" class="toasts" aria-live="assertive"></div>
+    <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

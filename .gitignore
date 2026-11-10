@@ -1,0 +1,15 @@
+node_modules/
+.env
+.DS_Store
+data/
+chrome-extension/pairing.json
+logs/
+build/
+.backup-pre-realism/
+.claude/
+*.zip
+*.dmg
+*.pem
+.env.*
+!.env.example
+tests/out/

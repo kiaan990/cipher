@@ -1,0 +1,12 @@
+# Never upload your keys or local data: keys go into Railway's Variables instead.
+.env
+node_modules/
+data/
+chrome-extension/pairing.json
+*.tmp.*
+.DS_Store
+logs/
+build/
+installer/
+mac-app/
+.backup-pre-realism/

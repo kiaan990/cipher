@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Cipher Bridge</title>
+<style>
+  :root { color-scheme: dark; }
+  body { width: 300px; margin: 0; padding: 16px; font: 13px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; background: #12131a; color: rgba(255,255,255,.92); }
+  h1 { font-size: 15px; margin: 0 0 4px; }
+  p { margin: 0 0 12px; color: rgba(235,238,255,.6); }
+  .status { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 12px; background: rgba(255,255,255,.06); margin-bottom: 12px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #ffc45c; flex: none; }
+  .status[data-s="connected"] .dot { background: #34d399; }
+  .status[data-s="disconnected"] .dot, .status[data-s="needs_code"] .dot, .status[data-s="unreachable"] .dot { background: #ff4558; }
+  label { display: block; font-size: 12px; color: rgba(235,238,255,.6); margin-bottom: 6px; }
+  input { width: 100%; box-sizing: border-box; padding: 9px 10px; border-radius: 10px; border: 1px solid rgba(255,255,255,.14); background: rgba(0,0,0,.35); color: inherit; font: 12px ui-monospace, "SF Mono", Menlo, monospace; }
+  button { margin-top: 8px; width: 100%; padding: 9px; border: 0; border-radius: 10px; background: #78a8ff; color: #06070c; font-weight: 600; cursor: pointer; }
+  small { display: block; margin-top: 10px; color: rgba(235,238,255,.4); }
+</style>
+</head>
+<body>
+  <h1>Cipher Bridge</h1>
+  <p>Lets the Cipher app on this Mac use your Chrome tabs when you ask it to.</p>
+  <div class="status" id="status"><span class="dot"></span><span id="statusText">…</span></div>
+  <label for="code">Pairing code (Cipher → Settings → Chrome)</label>
+  <input id="code" placeholder="3000-…" autocomplete="off" spellcheck="false" />
+  <button id="save">Connect</button>
+  <small>It only connects to the app on this Mac (127.0.0.1). Anything that sends, buys, posts or deletes needs your OK first.</small>
+  <script src="popup.js"></script>
+</body>
+</html>
