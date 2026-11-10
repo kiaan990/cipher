@@ -14,6 +14,7 @@ import { phrases } from "./tts.js";
 import { installAuth, isSignedIn, authEnabled } from "./auth.js";
 import { installPermissionRoutes } from "./permissions.js";
 import { APP_VERSION } from "./version.js";
+import { dreamer, installDreamRoutes } from "./dream.js";
 
 // Hosted on the internet without a password would let anyone use your API keys and
 // talk to your memory. Refuse to start rather than risk that.
@@ -28,6 +29,7 @@ app.disable("x-powered-by");
 app.get("/healthz", (_req, res) => res.send("ok"));
 installAuth(app);
 installPermissionRoutes(app);
+installDreamRoutes(app);
 app.use(express.static(path.join(ROOT_DIR, "public")));
 // Three.js for the 3D orb, served from node_modules so the app works offline.
 app.use("/vendor/three", express.static(path.join(ROOT_DIR, "node_modules", "three")));
@@ -94,7 +96,7 @@ const store = new ConversationStore();
 wss.on("connection", (ws, req) => {
   const url = new URL(req.url ?? "/ws", "http://localhost");
   const sessionId = (url.searchParams.get("session") || "default").slice(0, 64);
-  const session = new VoiceSession(ws, store.get(sessionId), Boolean(req.headers.origin));
+  const session = new VoiceSession(ws, store.get(sessionId), Boolean(req.headers.origin), sessionId);
   store.claim(sessionId, session);
 
   // Detect dead connections so the browser's reconnect logic can kick in.
@@ -132,6 +134,7 @@ server.listen(config.port, config.hosted ? "0.0.0.0" : "127.0.0.1", () => {
   }
   preloadSmartTurn();
   cloud.preload();
+  dreamer.start();
   // Common openers ("Oh, nice!", "Got it.") recorded ahead, so replies can start instantly.
   setTimeout(() => void phrases.warm(), 5000);
   if (config.openBrowser) {

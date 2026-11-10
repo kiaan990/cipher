@@ -22,6 +22,10 @@ import { listening, blendVoice } from "./listening.js";
 import { jobs, ago, type Job } from "./jobs.js";
 import { delegate } from "./delegate.js";
 import { targets } from "./targets.js";
+import { transcripts } from "./transcripts.js";
+import { wiki } from "./wiki.js";
+import { dreamer } from "./dream.js";
+import { recall, RECALL_TOOL, RECALL_NOTE } from "./recall.js";
 
 /** A tool still running after this long carries on as a background job. */
 const JOB_AFTER_MS = Number(process.env.JOB_AFTER_MS ?? 4000);
@@ -231,6 +235,8 @@ export class VoiceSession {
     private readonly history: Anthropic.MessageParam[],
     /** True when this connection is the app's own page (not a local script). */
     private readonly fromPage = false,
+    /** Which saved conversation this is, for the transcript log. */
+    private readonly sessionId = "default",
   ) {
     // Everything a reply sends goes through here, so it can be held back for a moment
     // while we find out whether the user is still talking (see `holdReply`).
@@ -433,7 +439,13 @@ export class VoiceSession {
         memory.remove(String(msg.id ?? ""));
         break;
       case "memory_clear":
+        // Clearing memory forgets everything behind it too: the longer notes, the
+        // record of past conversations, and what dreaming has kept.
         memory.clear();
+        wiki.clear();
+        transcripts.clear();
+        dreamer.clear();
+        this.exchangeIds.clear();
         break;
       case "loud":
         if (Date.now() - this.lastLoudMsgAt > 1500) this.loudBurstAt = Date.now();
@@ -1206,7 +1218,7 @@ export class VoiceSession {
       .run([...this.history], {
         image,
         sceneNote: this.vision.describe(),
-        memoryNote: [memory.describe(), jobs.describe()].filter(Boolean).join("\n\n"),
+        memoryNote: [memory.describe(), memory.enabled ? wiki.describe() : "", jobs.describe()].filter(Boolean).join("\n\n"),
         ...this.toolContext(),
         preamble: (call) => (cloud.owns(call.name) ? cloud.preamble(call.name) : undefined),
         runTool: async (call, signal) => {
@@ -1216,6 +1228,7 @@ export class VoiceSession {
           const report = (e: object) => this.send({ type: "action", turnId: turn.id, ...e });
           if (call.name === "app_control") return runAppControl(call, user, (cmd) => this.appCommand(turn.id, cmd), report as any);
           if (call.name === "jobs_status" || call.name === "job_cancel") return this.jobTool(call);
+          if (call.name === "recall") return recall.run(call);
           if (delegate.owns(call.name)) return delegate.run(call, mac.mode, user, report as any);
           if (cloud.owns(call.name)) return this.orJob(call, signal, CLOUD_JOB_AFTER_MS, (s) => cloud.run(call, user, s, report as any));
           if (call.name.startsWith("browser_")) return browser.run(call, mac.mode, user, signal, report as any);
@@ -1228,7 +1241,7 @@ export class VoiceSession {
       if (result === "complete" && !opts.note && user.text && typeof userText?.content === "string" && !turn.aborted) {
         const said = userText.content;
         // A short wait so a reply cancelled because they were mid-sentence is skipped.
-        setTimeout(() => !turn.aborted && memory.learnFrom(said, turn.text), 1500);
+        setTimeout(() => !turn.aborted && memory.learnFrom(said, turn.text, this.exchangeIds.get(turn.id)), 1500);
       }
       if (turn.recorded) return;
       turn.recorded = true;
@@ -1251,8 +1264,8 @@ export class VoiceSession {
 
   private toolContext(): { macNote: string; tools: Anthropic.Tool[] } {
     return {
-      macNote: [describeAppControl(), mac.describe(), browser.describe(mac.mode), cloud.describe(), delegate.describe(mac.mode), JOBS_NOTE].filter(Boolean).join("\n\n"),
-      tools: [APP_TOOL, ...(mac.tools ?? []), ...browser.tools(mac.mode), ...cloud.tools(), ...delegate.tools(mac.mode), ...JOB_TOOLS],
+      macNote: [describeAppControl(), mac.describe(), browser.describe(mac.mode), cloud.describe(), delegate.describe(mac.mode), JOBS_NOTE, recall.available ? RECALL_NOTE : ""].filter(Boolean).join("\n\n"),
+      tools: [APP_TOOL, ...(mac.tools ?? []), ...browser.tools(mac.mode), ...cloud.tools(), ...delegate.tools(mac.mode), ...JOB_TOOLS, ...(recall.available ? [RECALL_TOOL] : [])],
     };
   }
 
@@ -1363,7 +1376,17 @@ export class VoiceSession {
     if (interruptedId !== null && notify) this.send({ type: "interrupted", turnId: interruptedId });
   }
 
+  /** Which entry in the transcript log each recent reply was saved as. */
+  private readonly exchangeIds = new Map<number, number>();
+
   private pushAssistant(turn: AssistantTurn, msg: Anthropic.MessageParam): void {
+    // Save the exchange to the transcript log: what they said, and what they heard back.
+    const said = this.history[this.history.length - 1];
+    if (memory.enabled && said?.role === "user" && typeof said.content === "string" && typeof msg.content === "string") {
+      const id = transcripts.record(this.sessionId, said.content, msg.content);
+      if (id) this.exchangeIds.set(turn.id, id);
+      for (const old of this.exchangeIds.keys()) if (old < turn.id - 4) this.exchangeIds.delete(old);
+    }
     this.history.push(msg);
     this.turnMsgs.set(turn.id, { msg, turn });
     for (const id of this.turnMsgs.keys()) if (id < turn.id - 4) this.turnMsgs.delete(id);
@@ -1388,6 +1411,7 @@ export class VoiceSession {
   }
 
   private addUserMessage(text: string): void {
+    dreamer.touch(); // someone is talking: a dream in progress gives way
     const last = this.history[this.history.length - 1];
     if (last && last.role === "user" && typeof last.content === "string") {
       // Previous user turn got no reply (e.g. the user kept talking): merge.

@@ -58,6 +58,23 @@ export const config = {
   smartTurnMaxWaitMs: Number(env("SMART_TURN_MAX_WAIT_MS", "1400")) || 1400,
   /** Quiet "mm-hmm" / "yeah" while you're mid-thought, like a listener on a call. */
   backchannels: env("BACKCHANNELS", "on").toLowerCase() !== "off",
+
+  /**
+   * Dreaming: while nobody is talking, Cipher re-reads recent conversations, checks what
+   * it remembered against what was said, and tidies its memory (see dream.ts).
+   */
+  dream: env("DREAM", "on").toLowerCase() !== "off",
+  /** Dreaming is not time-critical, so it uses a stronger model than the conversation does. */
+  dreamModel: env("DREAM_MODEL", "claude-opus-5-5"),
+  dreamEffort: (["low", "medium", "high", "xhigh", "max"].includes(env("DREAM_EFFORT", "high").toLowerCase())
+    ? env("DREAM_EFFORT", "high").toLowerCase()
+    : "high") as "low" | "medium" | "high" | "xhigh" | "max",
+  /** How long the conversation must have been quiet before a dream starts (minutes). */
+  dreamIdleMin: Math.max(1, Number(env("DREAM_IDLE_MIN", "20")) || 20),
+  /** How many new exchanges make a dream worth running. */
+  dreamMinExchanges: Math.max(1, Number(env("DREAM_MIN_EXCHANGES", "6")) || 6),
+  /** A ceiling on dreams per day, so the cost stays bounded. */
+  dreamMaxPerDay: Math.max(1, Number(env("DREAM_MAX_PER_DAY", "8")) || 8),
 };
 
 function clamp01(n: number, fallback: number): number {

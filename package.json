@@ -11,7 +11,9 @@
     "start": "tsx server/index.ts",
     "dev": "tsx watch server/index.ts",
     "typecheck": "tsc --noEmit",
+    "dream": "tsx server/dream-cli.ts",
     "test": "node tests/run.mjs",
+    "test:dream": "tsx --test tests/dream.test.ts",
     "test:models": "tsx tests/first-token.ts"
   },
   "dependencies": {

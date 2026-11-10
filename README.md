@@ -24,7 +24,7 @@ Most voice assistants feel like walkie-talkies: you speak, wait, and get a monol
 | **Turn detection** | Semantic end-of-turn detection, so a mid-thought "um..." is not treated as the end of a turn |
 | **Barge-in** | Start talking while Cipher is speaking and it goes quiet within about 200 ms |
 | **Active listening** | Short backchannels ("mm-hmm", "oh wow", a soft laugh) in the gaps of longer turns; your own "yeah" does not cut it off; simultaneous starts are resolved with "sorry, go ahead" |
-| **Memory** | Remembers you between conversations, stored only on the local machine |
+| **Memory** | Remembers you between conversations, stored only on the local machine. While idle it "dreams": re-reads recent conversations, checks what it remembered against what was said, and tidies its memory |
 | **Mac control** | Opens apps, manages files, runs commands, and reads the screen, asking before changing anything |
 | **Chrome control** | Through the included extension: checks email, reads and operates websites, asking before sending or buying |
 | **Vision** | Camera stills passed to Claude, plus live on-device object detection |
@@ -72,6 +72,36 @@ flowchart LR
 | Reasoning | Anthropic Messages API, streamed (`claude-haiku-4-5` by default) | Response generation and tool use |
 | Text-to-speech | ElevenLabs streaming (`eleven_flash_v2_5`) | One request per sentence, sent as soon as the sentence is written |
 | Vision | Camera stills + [transformers.js](https://huggingface.co/docs/transformers.js) | Scene understanding and live object detection in the browser |
+
+## Memory and dreaming
+
+Cipher's memory has three layers, all kept in `data/` on the local machine:
+
+| Layer | What it holds | When it is read |
+| --- | --- | --- |
+| Transcripts (`transcripts.db`) | Every exchange, as spoken, searchable | When Cipher looks something up |
+| Pages (`wiki/*.md`) | Longer notes, one linked page per subject | When Cipher looks something up |
+| The short list (`memory.json`) | Brief facts about you | On every reply |
+
+During a conversation, the fast model takes one quick look at each exchange and writes down anything worth keeping. That is cheap and adds no delay, but it gets no second look: a mis-heard name stays wrong, near-duplicates pile up, and things that only become clear over several exchanges are missed.
+
+**Dreaming** is the second look. Once the conversation has been quiet for a while, a stronger model (`claude-opus-5-5` by default) works through three narrow steps:
+
+1. **Verify.** Each new fact is checked against the exchange it came from, then confirmed, corrected, or removed.
+2. **Reflect.** The conversations since the last dream are re-read as a whole, for what was missed or has since changed. Detail too long for the short list is noted on a page.
+3. **Organise** (about once a day). Duplicates are merged, detail is moved from the short list onto pages, and the pages are rewritten and re-linked.
+
+A dream only edits those files; it never changes the model. It stops between steps if you start talking. Every dream is recorded in `data/dreams/` with each change and the reason for it, and can be undone.
+
+```bash
+npm run dream -- status   # what is waiting, and what the latest dreams did
+npm run dream -- --dry    # ask the model and show what it would change, changing nothing
+npm run dream             # dream now
+npm run dream -- undo     # put things back as they were before the latest dream
+npm run test:dream        # the tests (no API calls)
+```
+
+Dreaming uses your Anthropic key and costs tokens each time it runs. `DREAM=off` in `.env` switches it off; `.env.example` lists the other settings. Switching memory off in the app stops both the transcript log and dreaming, and clearing memory also deletes the transcripts, the pages and the dream records.
 
 ## Design decisions
 

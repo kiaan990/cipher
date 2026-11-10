@@ -13,18 +13,51 @@ import { httpFetch } from "./net.js";
  * Claude call decides what (if anything) is worth remembering, so it adds no delay
  * to the conversation. The facts are added to Claude's instructions at the start of
  * every reply.
+ *
+ * Each fact notes which exchange it came from, so it can be checked later against what
+ * was actually said. That checking, and the tidying of this list, happens while Cipher
+ * is idle (see dream.ts).
  */
 
 export interface MemoryItem {
   id: string;
   text: string;
   at: number;
+  /** The exchange in the transcript log this fact was drawn from (see transcripts.ts). */
+  src?: number;
+  /** When the fact was last checked against the transcript and found right. */
+  checked?: number;
 }
 
 interface MemoryFile {
   enabled: boolean;
   items: MemoryItem[];
+  /** Facts that were removed (forgotten on request, or found wrong), so they are never learned again. */
+  forgotten: string[];
 }
+
+/** A set of changes to memory, applied together (used by dream.ts). */
+export interface MemoryChange {
+  add?: { text: string; src?: number; checked?: boolean }[];
+  /** Ids to delete. */
+  remove?: string[];
+  /** New wording for existing facts. */
+  edit?: { id: string; text: string }[];
+  /** Ids that were checked against the transcript and found right. */
+  checked?: string[];
+  /** Also note the removed facts as forgotten, so they are not learned again. */
+  forget?: boolean;
+  /** Facts to put back exactly as they were (undoing an earlier removal). */
+  restore?: MemoryItem[];
+}
+
+export interface MemoryChanged {
+  added: MemoryItem[];
+  removed: MemoryItem[];
+  edited: { id: string; from: string; to: string }[];
+}
+
+const MAX_FORGOTTEN = 200;
 
 const MAX_ITEMS = 150;
 const MAX_LEN = 240;
@@ -33,7 +66,7 @@ const FILE = path.join(config.dataDir, "memory.json");
 type Listener = (change: { added: string[]; removed: string[] }) => void;
 
 class MemoryStore {
-  private data: MemoryFile = { enabled: true, items: [] };
+  private data: MemoryFile = { enabled: true, items: [], forgotten: [] };
   private readonly listeners = new Set<Listener>();
   /** Updates run one at a time, in order. */
   private queue: Promise<void> = Promise.resolve();
@@ -95,13 +128,89 @@ class MemoryStore {
     const item = this.data.items.find((i) => i.id === id);
     if (!item) return;
     this.data.items = this.data.items.filter((i) => i !== item);
+    this.forget([item.text]);
     this.save([], [item.text]);
   }
 
   clear(): void {
     const removed = this.data.items.map((i) => i.text);
     this.data.items = [];
+    this.data.forgotten = [];
     this.save([], removed);
+  }
+
+  /** Facts that were removed and must not be learned again. */
+  forgotten(): string[] {
+    return [...this.data.forgotten];
+  }
+
+  private forget(texts: string[]): void {
+    const seen = new Set(this.data.forgotten.map((t) => t.toLowerCase()));
+    for (const t of texts) if (!seen.has(t.toLowerCase())) this.data.forgotten.push(t);
+    this.data.forgotten = this.data.forgotten.slice(-MAX_FORGOTTEN);
+  }
+
+  /**
+   * Apply a set of changes together. Waits its turn behind any update in progress, so
+   * it never works from a list that is about to change.
+   */
+  apply(change: MemoryChange): Promise<MemoryChanged> {
+    return this.inTurn(() => {
+      const now = Date.now();
+      const byId = new Map(this.data.items.map((i) => [i.id, i]));
+      const result: MemoryChanged = { added: [], removed: [], edited: [] };
+
+      const removeIds = new Set((change.remove ?? []).filter((id) => byId.has(id)));
+      result.removed = this.data.items.filter((i) => removeIds.has(i.id));
+      this.data.items = this.data.items.filter((i) => !removeIds.has(i.id));
+      if (change.forget) this.forget(result.removed.map((i) => i.text));
+
+      for (const e of change.edit ?? []) {
+        const item = byId.get(e.id);
+        const text = clean(e.text);
+        if (!item || removeIds.has(e.id) || !text || text === item.text) continue;
+        result.edited.push({ id: item.id, from: item.text, to: text });
+        item.text = text;
+        item.checked = now;
+      }
+      for (const id of change.checked ?? []) {
+        const item = byId.get(id);
+        if (item && !removeIds.has(id)) item.checked = now;
+      }
+
+      const known = new Set(this.data.items.map((i) => i.text.toLowerCase()));
+      for (const old of change.restore ?? []) {
+        if (byId.has(old.id) || known.has(old.text.toLowerCase())) continue;
+        known.add(old.text.toLowerCase());
+        this.data.items.push({ ...old });
+        this.data.forgotten = this.data.forgotten.filter((t) => t.toLowerCase() !== old.text.toLowerCase());
+        result.added.push(old);
+      }
+      this.data.items.sort((x, y) => x.at - y.at);
+      for (const a of change.add ?? []) {
+        const text = clean(a.text);
+        if (!text || known.has(text.toLowerCase())) continue;
+        known.add(text.toLowerCase());
+        const item: MemoryItem = { id: randomUUID().slice(0, 8), text, at: now, ...(a.src ? { src: a.src } : {}), ...(a.checked ? { checked: now } : {}) };
+        this.data.items.push(item);
+        result.added.push(item);
+      }
+      this.data.items = this.data.items.slice(-MAX_ITEMS);
+
+      if (result.added.length || result.removed.length || result.edited.length || change.checked?.length) {
+        this.save([...result.added.map((i) => i.text), ...result.edited.map((e) => e.to)], [...result.removed.map((i) => i.text), ...result.edited.map((e) => e.from)]);
+      }
+      return result;
+    });
+  }
+
+  private inTurn<T>(work: () => T): Promise<T> {
+    const run = this.queue.then(work);
+    this.queue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   }
 
   /** The block added to Claude's instructions, or "" when there's nothing to add. */
@@ -117,15 +226,18 @@ class MemoryStore {
     ].join("\n");
   }
 
-  /** Look at one exchange and update the memory in the background. */
-  learnFrom(userText: string, assistantText: string): void {
+  /**
+   * Look at one exchange and update the memory in the background.
+   * `src` is the exchange's id in the transcript log, when it was saved there.
+   */
+  learnFrom(userText: string, assistantText: string, src?: number): void {
     if (!this.data.enabled || !this.client || !userText.trim()) return;
-    this.queue = this.queue.then(() => this.update(userText, assistantText)).catch((err) => {
+    this.queue = this.queue.then(() => this.update(userText, assistantText, src)).catch((err) => {
       console.warn(`[memory] update failed: ${(err as Error)?.message ?? err}`);
     });
   }
 
-  private async update(userText: string, assistantText: string): Promise<void> {
+  private async update(userText: string, assistantText: string, src?: number): Promise<void> {
     const current = this.data.items.map((i) => `${i.id}: ${i.text}`).join("\n") || "(nothing yet)";
     const res = await this.client!.messages.create({
       model: config.anthropicModel,
@@ -167,7 +279,7 @@ Most exchanges contain nothing worth saving: then add and remove nothing.`,
     const input = (call?.type === "tool_use" ? call.input : {}) as { add?: unknown; remove?: unknown };
     const add = (Array.isArray(input.add) ? input.add : [])
       .filter((t): t is string => typeof t === "string")
-      .map((t) => t.replace(/\s+/g, " ").trim().slice(0, MAX_LEN))
+      .map(clean)
       .filter(Boolean)
       .slice(0, 6);
     const removeIds = new Set((Array.isArray(input.remove) ? input.remove : []).map(String));
@@ -178,8 +290,9 @@ Most exchanges contain nothing worth saving: then add and remove nothing.`,
     const fresh = add.filter((t) => !known.has(t.toLowerCase()));
     this.data.items = [
       ...this.data.items.filter((i) => !removeIds.has(i.id)),
-      ...fresh.map((text) => ({ id: randomUUID().slice(0, 8), text, at: Date.now() })),
+      ...fresh.map((text) => ({ id: randomUUID().slice(0, 8), text, at: Date.now(), ...(src ? { src } : {}) })),
     ].slice(-MAX_ITEMS);
+    this.forget(removed.map((i) => i.text));
     this.save(fresh, removed.map((i) => i.text));
   }
 
@@ -196,13 +309,15 @@ Most exchanges contain nothing worth saving: then add and remove nothing.`,
   }
 }
 
+const clean = (text: string): string => String(text ?? "").replace(/\s+/g, " ").trim().slice(0, MAX_LEN);
+
 // ---- saving safely ------------------------------------------------------------------
 
 const BACKUP_DIR = path.join(path.dirname(FILE), "backups");
 const KEEP_BACKUPS = 30;
 
 /** Write to a temporary file, force it onto the disk, then swap it in: a crash or power cut leaves either the old file or the new one, never half of one. */
-function writeDurably(file: string, text: string): void {
+export function writeDurably(file: string, text: string): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp`;
   const fd = fs.openSync(tmp, "w", 0o600);
@@ -244,7 +359,14 @@ function readMemoryFile(file: string): MemoryFile | null {
       enabled: raw.enabled !== false,
       items: raw.items
         .filter((i: any) => i && typeof i.text === "string" && i.text.trim())
-        .map((i: any) => ({ id: String(i.id || randomUUID()), text: String(i.text).slice(0, MAX_LEN), at: Number(i.at) || Date.now() })),
+        .map((i: any) => ({
+          id: String(i.id || randomUUID()),
+          text: String(i.text).slice(0, MAX_LEN),
+          at: Number(i.at) || Date.now(),
+          ...(Number(i.src) > 0 ? { src: Number(i.src) } : {}),
+          ...(Number(i.checked) > 0 ? { checked: Number(i.checked) } : {}),
+        })),
+      forgotten: (Array.isArray(raw.forgotten) ? raw.forgotten : []).filter((t: any) => typeof t === "string" && t.trim()).slice(-MAX_FORGOTTEN),
     };
   } catch {
     return null;
