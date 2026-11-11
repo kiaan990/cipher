@@ -97,6 +97,8 @@ export interface DreamStep {
   name: "verify" | "reflect" | "organise";
   changes: Change[];
   usage: Usage;
+  /** The model was asked something in this step (false: there was nothing to look at). */
+  asked?: boolean;
   error?: string;
 }
 
@@ -450,7 +452,7 @@ class Dreamer {
 
     record.finishedAt = Date.now();
     const changed = record.steps.flatMap((s) => s.changes).filter((c) => c.what !== "confirmed" && c.what !== "skipped").length;
-    if (record.status === "done" && !record.steps.some((s) => s.usage.input)) record.status = "nothing to do";
+    if (record.status === "done" && !record.steps.some((s) => s.asked)) record.status = "nothing to do";
     if (!dry) {
       const now = record.finishedAt;
       if (record.status === "done" || record.status === "nothing to do") {
@@ -467,7 +469,7 @@ class Dreamer {
         this.state.day = today(now);
         this.state.dreamsToday = 0;
       }
-      if (record.steps.some((s) => s.usage.input)) this.state.dreamsToday++;
+      if (record.steps.some((s) => s.asked || s.error)) this.state.dreamsToday++;
       this.saveState();
     }
     if (record.status !== "nothing to do") this.saveRecord(record);
@@ -492,6 +494,7 @@ class Dreamer {
       .join("\n\n----------\n\n");
     const { data, usage } = await this.model!.ask<{ verdicts: { id: string; verdict: string; text: string; reason: string }[] }>("verify", VERIFY_SYSTEM, user, VERIFY_SCHEMA);
     step.usage = usage;
+    step.asked = true;
 
     const byId = new Map(candidates.map((c) => [c.item.id, c.item]));
     const remove: string[] = [];
@@ -550,6 +553,7 @@ class Dreamer {
       }>("reflect", REFLECT_SYSTEM, user, REFLECT_SCHEMA);
       step.usage.input += usage.input;
       step.usage.output += usage.output;
+      step.asked = true;
 
       const seen = new Map(batch.map((e) => [e.id, e]));
       const known = new Map(memory.list().map((i) => [i.id, i]));
@@ -618,6 +622,7 @@ class Dreamer {
       delete_pages: { page: string; reason: string }[];
     }>("organise", ORGANISE_SYSTEM, user, ORGANISE_SCHEMA);
     step.usage = usage;
+    step.asked = true;
 
     const known = new Map(items.map((i) => [i.id, i]));
     const existing = new Map(pages.map((p) => [p.slug, p]));

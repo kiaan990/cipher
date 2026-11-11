@@ -27,7 +27,7 @@ function scripted(answers: Record<string, (user: string) => unknown>): DreamMode
       (asked[step] ??= []).push(user);
       const answer = answers[step];
       if (!answer) throw new Error(`unexpected step: ${step}`);
-      return { data: answer(user) as T, usage: { input: 100, output: 20 } };
+      return { data: answer(user) as T, usage: { input: 0, output: 0 } }; // a model that reports no tokens must still count
     },
   };
 }
@@ -82,6 +82,7 @@ test("verify: confirms, corrects and removes facts against their exchange", asyn
 
   assert.equal(record.status, "done");
   assert.ok(model.asked.verify[0].includes("M A X"), "the model is shown the exchange the fact came from");
+  assert.equal(dreamer.records(1)[0].id, record.id, "the dream is recorded");
   assert.ok(!model.asked.verify[0].includes("They like tea."), "a fact with no transcript is not sent");
   assert.deepEqual(texts().sort(), ["Their dog is called Max.", "Their sister is called Maya.", "They like tea."]);
   assert.ok(memory.list().find((i) => i.text === "Their dog is called Max.")!.checked);
