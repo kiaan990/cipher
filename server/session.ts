@@ -13,7 +13,8 @@ import { browser } from "./browser.js";
 import { cloud } from "./cloud.js";
 import { APP_TOOL, describeAppControl, runAppControl, type AppCommandResult } from "./appcontrol.js";
 import { randomUUID } from "node:crypto";
-import { AssistantTurn, warmModel } from "./turn.js";
+import { AssistantTurn, pickModel, warmModel } from "./turn.js";
+import { approvals } from "./approvals.js";
 import { AudioTail, predictTurnComplete, smartTurnReady } from "./smartturn.js";
 import { backchannelClips, backchannelKinds, prepareBackchannels, CUE_ECHOES, type CueKind } from "./backchannel.js";
 import { phrases } from "./tts.js";
@@ -366,7 +367,7 @@ export class VoiceSession {
         }
         break;
       case "vision_still":
-        this.vision.setStill(msg.jpeg);
+        this.vision.setStill(msg.jpeg, msg.earlier, msg.earlierAgoMs);
         break;
       case "vision":
         if (typeof msg.enabled === "boolean") this.vision.setEnabled(msg.enabled);
@@ -1200,11 +1201,14 @@ export class VoiceSession {
     // A note from the app is not the user speaking, so it can never count as their "yes".
     const user = { text: opts.note || typeof userText?.content !== "string" ? "" : userText.content.replace(NOTE_PATTERN, "").trim(), turn: this.userTurns };
     const image = this.vision.freshStill() ?? undefined;
-    if (image) console.log(`[vision] camera still sent with turn ${turn.id} (${Math.round((image.length * 3) / 4 / 1024)} KB)`);
+    if (image) console.log(`[vision] camera still sent with turn ${turn.id} (${Math.round((image.jpeg.length * 3) / 4 / 1024)} KB, ${(image.ageMs / 1000).toFixed(1)} s old${image.earlier ? ", plus the view from when they started speaking" : ""})`);
     else if (this.vision.enabled) console.log(`[vision] camera is on but no recent still for turn ${turn.id}`);
+    const model = pickModel(user.text, approvals.pending);
+    if (model) console.log(`[claude] turn ${turn.id}: a task, so ${model} answers`);
     turn
       .run([...this.history], {
         image,
+        model,
         sceneNote: this.vision.describe(),
         memoryNote: [memory.describe(), jobs.describe()].filter(Boolean).join("\n\n"),
         ...this.toolContext(),

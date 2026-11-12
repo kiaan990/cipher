@@ -30,7 +30,19 @@ export const config = {
   /** Your cloud server's MCP address and access token (optional). Cipher can look things up and, with your OK, make changes there. */
   cloudMcpUrl: env("KIAAN_MCP_URL"),
   cloudMcpToken: env("KIAAN_MCP_TOKEN"),
+  /** The fast model that does the talking. */
   anthropicModel: env("ANTHROPIC_MODEL", "claude-haiku-4-5"),
+  /**
+   * A more careful model, used for the replies where Cipher has to get something done
+   * (calendar, tasks, deadlines). "off" (or the same name as ANTHROPIC_MODEL) uses one model for everything.
+   */
+  toolModel: env("ANTHROPIC_TOOL_MODEL", "claude-sonnet-5-5"),
+  /** The user's time zone, for "today" and "next Tuesday". On a hosted server the machine's own zone is not theirs. */
+  timezone: validZone(env("TIMEZONE")) || (hosted ? "America/New_York" : Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York"),
+  /** "deletes" (default): only deleting on the cloud server asks first. "all": every change asks first. */
+  cloudConfirm: env("CLOUD_CONFIRM", "deletes").toLowerCase() === "all" ? ("all" as const) : ("deletes" as const),
+  /** The calendar new events go in when none fits better. */
+  cloudDefaultCalendar: env("CLOUD_DEFAULT_CALENDAR", "Personal"),
 
   deepgramKey: env("DEEPGRAM_API_KEY"),
   deepgramModel: env("DEEPGRAM_MODEL", "nova-3"),
@@ -59,6 +71,17 @@ export const config = {
   /** Quiet "mm-hmm" / "yeah" while you're mid-thought, like a listener on a call. */
   backchannels: env("BACKCHANNELS", "on").toLowerCase() !== "off",
 };
+
+function validZone(zone: string): string {
+  if (!zone) return "";
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: zone });
+    return zone;
+  } catch {
+    console.warn(`TIMEZONE "${zone}" isn't a time zone name (use one like America/New_York). Ignoring it.`);
+    return "";
+  }
+}
 
 function clamp01(n: number, fallback: number): number {
   return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : fallback;

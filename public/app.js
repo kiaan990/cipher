@@ -1,6 +1,6 @@
 import { Orb as Orb2D } from "./orb2d.js";
 import { AudioEngine } from "./audio.js";
-import { Vision, VISION_MODELS } from "./vision.js";
+import { Vision, VISION_MODELS, sceneChange } from "./vision.js";
 
 // ---- tuning -------------------------------------------------------------------
 const FRAME_MS = 20; // mic frames from the worklet
@@ -130,7 +130,7 @@ let assistantText = "";
 let userTurnAt = 0;
 const firstAudioSeen = new Set();
 
-const vad = { floor: 0.006, above: 0, below: 0, speaking: false, onsetSent: false };
+const vad = { floor: 0.006, above: 0, below: 0, speaking: false, onsetSent: false, endSent: true };
 
 // Words: yours fly in as you're transcribed; Cipher's appear in step with its voice.
 let userWordsShown = 0;
@@ -319,6 +319,7 @@ function onJson(msg) {
       break;
     }
     case "thinking":
+      stillTurnBegan();
       currentTurnId = msg.turnId;
       assistantText = "";
       assistantPending = "";
@@ -515,9 +516,16 @@ function onMicFrame(pcm, rms) {
   if (!playing && heardMs >= SPEECH_START_MS && !vad.onsetSent) {
     vad.onsetSent = true;
     send({ type: "user_speaking" });
-    sendStill(); // what you're holding up as you start talking
+    vad.endSent = false;
+    sendStill("start"); // what you're holding up as you start talking
   }
   if (vad.below * FRAME_MS >= 150) vad.onsetSent = false;
+  // You've paused: this is the view your words are about. It reaches the server well before
+  // it decides you've finished (that takes longer than this), so the reply sees this frame.
+  if (!playing && !vad.endSent && vad.below * FRAME_MS >= 180) {
+    vad.endSent = true;
+    sendStill("pause");
+  }
 
   // Something loud while Cipher talks: turn it down at once. It only stops if the server
   // hears actual words from you (not the TV, a cough or its own voice), see session.ts.
@@ -1148,14 +1156,39 @@ function checkVersion(version) {
 }
 
 // ---- camera stills for Cipher -----------------------------------------------------------
-// While the camera is on, the server always has a recent still (and a new one the moment you
-// start talking, which is the one that matters), which
-// is attached to whatever you say next. Kept only for that reply, never stored.
-const STILL_EVERY_MS = 2000; // plus one the moment you start talking (see onMicFrame)
-function sendStill() {
+// While the camera is on, the server always holds a recent still, attached to whatever you
+// say next. Kept only for that reply, never stored. Three moments matter:
+//   - a steady one every couple of seconds, so there is always something recent
+//   - the moment you start talking: what you're holding up as you say "what's this?"
+//   - the moment you pause: what the camera sees as you finish, which is what gets answered
+// If the view changed in between (you showed something, then put it down), the picture
+// from when you started is sent along too, so both are seen.
+const STILL_EVERY_MS = 2000;
+const STILL_CHANGED = 14; // fingerprint difference (0–255) that counts as a different view
+const STILL_START_KEEP_MS = 12_000; // how long a "when you started" picture stays relevant
+const stillAt = { start: null, sent: 0 };
+
+function sendStill(moment = "tick") {
   if (!active || !settings.stills || !vision.on || document.hidden) return;
-  const jpeg = vision.snapshot();
-  if (jpeg) send({ type: "vision_still", jpeg });
+  const now = performance.now();
+  if (stillAt.start && now - stillAt.start.at > STILL_START_KEEP_MS) stillAt.start = null;
+  // The steady tick stands down while you're mid-sentence: onset and pause stills cover that.
+  if (moment === "tick" && now - stillAt.sent < STILL_EVERY_MS - 100) return;
+  const shot = vision.snapshot();
+  if (!shot) return;
+  stillAt.sent = now;
+  if (moment === "start") {
+    // Smaller copy of the opening view, only used if the view has changed by the time you finish.
+    if (!stillAt.start) stillAt.start = { sig: shot.sig, jpeg: vision.snapshot(640, 0.72)?.jpeg ?? null, at: now };
+    return send({ type: "vision_still", jpeg: shot.jpeg, moment });
+  }
+  const start = stillAt.start;
+  const changed = start?.jpeg && sceneChange(start.sig, shot.sig) >= STILL_CHANGED;
+  send({ type: "vision_still", jpeg: shot.jpeg, moment, ...(changed ? { earlier: start.jpeg, earlierAgoMs: Math.round(now - start.at) } : {}) });
+}
+/** A reply has begun: the next thing you say starts a new "when you started" picture. */
+function stillTurnBegan() {
+  stillAt.start = null;
 }
 setInterval(sendStill, STILL_EVERY_MS);
 

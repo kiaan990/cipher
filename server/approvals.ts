@@ -35,6 +35,11 @@ class Approvals {
     return false;
   }
 
+  /** A question is waiting for the user's answer (so their next words may be a yes). */
+  get pending(): boolean {
+    return !!this.asked && Date.now() - this.asked.at <= TTL_MS;
+  }
+
   clear(): void {
     this.asked = null;
   }
