@@ -40,6 +40,9 @@ export function slugify(text: string): string {
 }
 
 class Wiki {
+  /** The line for Claude's instructions, kept so a reply never waits on reading files. */
+  private described: string | null = null;
+
   list(): Page[] {
     let files: string[];
     try {
@@ -72,15 +75,18 @@ class Wiki {
     if (!this.read(slug) && this.list().length >= MAX_PAGES) return false;
     const heading = title.replace(/\s+/g, " ").trim().slice(0, 80) || slug;
     writeDurably(path.join(DIR, `${slug}.md`), `# ${heading}\n\n${text}\n`);
+    this.described = null;
     return true;
   }
 
   remove(slug: string): void {
     if (SLUG.test(slug)) fs.rmSync(path.join(DIR, `${slug}.md`), { force: true });
+    this.described = null;
   }
 
   clear(): void {
     fs.rmSync(DIR, { recursive: true, force: true });
+    this.described = null;
   }
 
   /** Links that point at a page that doesn't exist, as [from, to] pairs. */
@@ -120,8 +126,12 @@ class Wiki {
 
   /** A line for Claude's instructions saying which pages exist, or "" when there are none. */
   describe(): string {
+    if (this.described !== null) return this.described;
     const pages = this.list();
-    if (!pages.length) return "";
+    return (this.described = pages.length ? this.describeLine(pages) : "");
+  }
+
+  private describeLine(pages: Page[]): string {
     return `You also keep longer notes on: ${pages.map((p) => p.title).join("; ")}. They are not shown here: use recall to read them.`;
   }
 }

@@ -247,8 +247,32 @@ test("a dream gives way when a conversation starts, and a failed step stops the 
   assert.ok(dreamer.status().newExchanges > 0, "exchanges a failed dream did not read are still waiting");
 });
 
-test("dreams wait for quiet, and are skipped while memory is off", () => {
+test("clearing memory mid-dream stops the dream writing anything", async () => {
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  dreamer.useModel({
+    async ask<T>() {
+      await held;
+      return { data: { add: [{ text: "Written after the clear.", src: 0, reason: "late" }], remove: [], notes: [], verdicts: [] } as T, usage: { input: 1, output: 1 } };
+    },
+  });
+  transcripts.record("s5", "Something said just before clearing", "Okay. [mood: calm]");
+  const running = dreamer.dream("light");
+  memory.clear();
+  dreamer.clear(); // what the app does when the person clears memory
+  release();
+  const record = await running;
+  assert.equal(record.status, "failed");
+  assert.deepEqual(texts(), []);
+  await memory.apply({ add: [{ text: "They like tea." }] });
+});
+
+test("dreams wait for quiet, and are skipped while memory is off", async () => {
   const now = Date.now();
+  assert.equal(dreamer.due(now + 26 * 60 * 60 * 1000), null, "nothing happens on its own before a first run by hand");
+  dreamer.useModel(scripted({ reflect: () => ({ add: [], remove: [], notes: [] }), organise: () => ({ reword: [], pages: [], delete_pages: [], remove: [] }) }));
+  transcripts.record("s6", "Trying it by hand", "Sure. [mood: calm]");
+  assert.equal((await dreamer.dream("deep", { dry: true, byHand: true })).status, "done");
   assert.equal(dreamer.due(now), null, "not while someone was just talking");
   assert.notEqual(dreamer.due(now + 26 * 60 * 60 * 1000), null, "due after a long quiet spell");
   memory.setEnabled(false);

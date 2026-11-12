@@ -131,6 +131,8 @@ interface State {
   dirty: boolean;
   day: string;
   dreamsToday: number;
+  /** A dream started by hand has finished at least once (see `due`). */
+  tried: boolean;
 }
 
 const DIR = path.join(config.dataDir, "dreams");
@@ -322,7 +324,9 @@ class Dreamer {
   private interrupted = false;
   private lastTouch = Date.now();
   private timer: NodeJS.Timeout | null = null;
-  private state: State = { cursor: 0, lastDreamAt: 0, lastDeepAt: 0, lastAttemptAt: 0, dirty: true, day: "", dreamsToday: 0 };
+  private state: State = { cursor: 0, lastDreamAt: 0, lastDeepAt: 0, lastAttemptAt: 0, dirty: true, day: "", dreamsToday: 0, tried: false };
+  /** Goes up each time memory is cleared, so a dream in progress knows not to write to it. */
+  private epoch = 0;
 
   constructor() {
     try {
@@ -331,6 +335,8 @@ class Dreamer {
       /* first run */
     }
   }
+
+  private runEpoch = 0;
 
   /** Use a different model (tests pass a stand-in). */
   useModel(model: DreamModel): void {
@@ -358,12 +364,18 @@ class Dreamer {
       if (kind) void this.dream(kind).catch((err) => console.warn(`[dream] failed: ${(err as Error).message}`));
     }, 60_000);
     this.timer.unref();
-    console.log(`  Dreaming is on (${config.dreamModel}, after ${config.dreamIdleMin} quiet minutes).`);
+    console.log(
+      this.state.tried
+        ? `  Dreaming is on (${config.dreamModel}, after ${config.dreamIdleMin} quiet minutes).`
+        : "  Dreaming is waiting for a first run by hand. Try it with: npm run dream -- --dry",
+    );
   }
 
   /** Which kind of dream is due now, if any. */
   due(now = Date.now()): DreamKind | null {
     if (!config.dream || !memory.enabled || !config.anthropicKey || this.running) return null;
+    // Nothing happens on its own until one dream has been run by hand and seen to work.
+    if (!this.state.tried) return null;
     const quietFor = now - Math.max(this.lastTouch, transcripts.lastActivity);
     if (quietFor < config.dreamIdleMin * 60_000) return null;
     if (now - this.state.lastAttemptAt < 30 * 60_000) return null; // also the wait after a failure
@@ -399,15 +411,31 @@ class Dreamer {
    * Dream now. With `dry`, the model is asked and its proposals are recorded, but
    * nothing is changed.
    */
-  dream(kind: DreamKind, opts: { dry?: boolean } = {}): Promise<DreamRecord> {
+  dream(kind: DreamKind, opts: { dry?: boolean; byHand?: boolean } = {}): Promise<DreamRecord> {
     if (this.running) return this.running;
     this.interrupted = false;
-    this.running = this.run(kind, Boolean(opts.dry)).finally(() => (this.running = null));
+    this.running = this.run(kind, Boolean(opts.dry))
+      .then((record) => {
+        if (opts.byHand && record.status === "done" && !this.state.tried) {
+          this.state.tried = true;
+          this.saveState();
+          console.log("[dream] the first run by hand worked; dreaming will now happen on its own when things are quiet");
+        }
+        return record;
+      })
+      .finally(() => (this.running = null));
     return this.running;
+  }
+
+  /** Stop if memory was cleared or switched off while the model was thinking. */
+  private stillWanted(epoch: number): void {
+    if (epoch !== this.epoch) throw new Error("memory was cleared during the dream, so nothing more was written");
+    if (!memory.enabled) throw new Error("memory was switched off during the dream, so nothing more was written");
   }
 
   private async run(kind: DreamKind, dry: boolean): Promise<DreamRecord> {
     const startedAt = Date.now();
+    this.runEpoch = this.epoch;
     const record: DreamRecord = {
       id: new Date(startedAt).toISOString().replace(/[:.]/g, "-"),
       kind,
@@ -420,7 +448,7 @@ class Dreamer {
     };
     if (!memory.enabled) throw new Error("memory is switched off");
     this.model ??= config.anthropicKey ? new ClaudeDreamModel() : null;
-    if (!this.model) throw new Error("ANTHROPIC_API_KEY is missing");
+    if (!this.model) throw new Error("ANTHROPIC_API_KEY is missing. Add it to .env first.");
     if (!dry) {
       this.state.lastAttemptAt = startedAt;
       this.saveState();
@@ -518,6 +546,7 @@ class Dreamer {
       }
     }
     if (record.dry) return;
+    this.stillWanted(this.runEpoch);
     const done = await memory.apply({ remove, edit, checked, forget: true });
     this.noteUndo(record, done);
   }
@@ -581,6 +610,7 @@ class Dreamer {
       }
 
       if (!record.dry) {
+        this.stillWanted(this.runEpoch);
         const done = await memory.apply({ add, remove: remove.map((r) => r.id), forget: true });
         this.noteUndo(record, done);
         for (const [slug, note] of notes) {
@@ -662,6 +692,7 @@ class Dreamer {
     for (const [slug, w] of writes) step.changes.push({ what: "page written", detail: `${slug} (${w.body.length} characters)`, reason: w.reason });
     for (const d of deletes) step.changes.push({ what: "page removed", detail: d.slug, reason: d.reason });
     if (record.dry) return;
+    this.stillWanted(this.runEpoch);
 
     // Pages first, so a fact is never removed before the page that now holds it is saved.
     for (const [slug, w] of writes) {
@@ -736,6 +767,7 @@ class Dreamer {
 
   /** Forget everything a dream keeps (used when the person clears Cipher's memory). */
   clear(): void {
+    this.epoch++;
     fs.rmSync(DIR, { recursive: true, force: true });
     this.state = { ...this.state, cursor: 0, dirty: false };
     this.saveState();
@@ -798,7 +830,7 @@ export function installDreamRoutes(app: express.Express): void {
   app.post("/api/dream", guard, (req, res) => {
     if (dreamer.busy) return res.status(409).json({ error: "A dream is already running." });
     const kind: DreamKind = req.query.kind === "light" ? "light" : "deep";
-    void dreamer.dream(kind, { dry: req.query.dry === "1" }).catch((err) => console.warn(`[dream] failed: ${(err as Error).message}`));
+    void dreamer.dream(kind, { dry: req.query.dry === "1", byHand: true }).catch((err) => console.warn(`[dream] failed: ${(err as Error).message}`));
     res.status(202).json({ started: true, kind });
   });
   app.post("/api/dream/undo", guard, async (req, res) => {

@@ -25,9 +25,20 @@ type Listing = { status: Record<string, unknown> & { busy: boolean }; dreams: { 
 const fetchListing = async (): Promise<Listing | null> => {
   try {
     const res = await fetch(`${base}/api/dream`, { headers, signal: AbortSignal.timeout(4000) });
-    return res.ok ? ((await res.json()) as Listing) : null;
+    if (!res.ok) return null;
+    const body = (await res.json()) as Listing;
+    return body?.status && Array.isArray(body.dreams) ? body : null;
   } catch {
     return null;
+  }
+};
+/** Is Cipher itself answering on this port (even if it won't let this tool in)? */
+const cipherIsUp = async (): Promise<boolean> => {
+  try {
+    const res = await fetch(`${base}/healthz`, { signal: AbortSignal.timeout(3000) });
+    return res.ok && (await res.text()).trim() === "ok";
+  } catch {
+    return false;
   }
 };
 
@@ -73,11 +84,15 @@ async function alone(): Promise<void> {
     return say(record ? `Undone:\n${describeDream(record)}` : "There is no dream to undo.");
   }
   say(`Dreaming (${kind}${dry ? ", dry run" : ""}). This can take a few minutes…`);
-  say(describeDream(await dreamer.dream(kind, { dry })));
+  say(describeDream(await dreamer.dream(kind, { dry, byHand: true })));
 }
 
 const running = await fetchListing();
 try {
+  if (!running && (await cipherIsUp())) {
+    // Two programs must never both write memory, so don't fall back to doing it here.
+    throw new Error(`Cipher is running on port ${config.port} but would not answer this tool (is it the hosted version, or an older copy?). Restart Cipher from this folder and try again.`);
+  }
   await (running ? viaApp(running) : alone());
 } catch (err) {
   console.error(`Dreaming failed: ${(err as Error).message}`);

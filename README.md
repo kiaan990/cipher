@@ -91,6 +91,8 @@ During a conversation, the fast model takes one quick look at each exchange and 
 2. **Reflect.** The conversations since the last dream are re-read as a whole, for what was missed or has since changed. Detail too long for the short list is noted on a page.
 3. **Organise** (about once a day). Duplicates are merged, detail is moved from the short list onto pages, and the pages are rewritten and re-linked.
 
+Nothing happens on its own until you have run one dream by hand and seen it work (`npm run dream -- --dry` is enough). After that, dreams start by themselves when things are quiet.
+
 A dream only edits those files; it never changes the model. It stops between steps if you start talking. Every dream is recorded in `data/dreams/` with each change and the reason for it, and can be undone.
 
 ```bash
