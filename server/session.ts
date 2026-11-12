@@ -11,6 +11,7 @@ import { APP_VERSION } from "./version.js";
 import { mac, type ControlMode } from "./mac.js";
 import { browser } from "./browser.js";
 import { cloud } from "./cloud.js";
+import { muse } from "./muse.js";
 import { APP_TOOL, describeAppControl, runAppControl, type AppCommandResult } from "./appcontrol.js";
 import { randomUUID } from "node:crypto";
 import { AssistantTurn, pickModel, warmModel } from "./turn.js";
@@ -1220,6 +1221,7 @@ export class VoiceSession {
           const report = (e: object) => this.send({ type: "action", turnId: turn.id, ...e });
           if (call.name === "app_control") return runAppControl(call, user, (cmd) => this.appCommand(turn.id, cmd), report as any);
           if (call.name === "jobs_status" || call.name === "job_cancel") return this.jobTool(call);
+          if (muse.owns(call.name)) return muse.run(call);
           if (delegate.owns(call.name)) return delegate.run(call, mac.mode, user, report as any);
           if (cloud.owns(call.name)) return this.orJob(call, signal, CLOUD_JOB_AFTER_MS, (s) => cloud.run(call, user, s, report as any));
           if (call.name.startsWith("browser_")) return browser.run(call, mac.mode, user, signal, report as any);
@@ -1255,8 +1257,8 @@ export class VoiceSession {
 
   private toolContext(): { macNote: string; tools: Anthropic.Tool[] } {
     return {
-      macNote: [describeAppControl(), mac.describe(), browser.describe(mac.mode), cloud.describe(), delegate.describe(mac.mode), JOBS_NOTE].filter(Boolean).join("\n\n"),
-      tools: [APP_TOOL, ...(mac.tools ?? []), ...browser.tools(mac.mode), ...cloud.tools(), ...delegate.tools(mac.mode), ...JOB_TOOLS],
+      macNote: [describeAppControl(), mac.describe(), browser.describe(mac.mode), cloud.describe(), muse.describe(), delegate.describe(mac.mode), JOBS_NOTE].filter(Boolean).join("\n\n"),
+      tools: [APP_TOOL, ...(mac.tools ?? []), ...browser.tools(mac.mode), ...cloud.tools(), ...muse.tools(), ...delegate.tools(mac.mode), ...JOB_TOOLS],
     };
   }
 

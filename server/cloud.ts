@@ -213,6 +213,29 @@ class Cloud {
     return { text, isError: !!r.isError, data };
   }
 
+  /**
+   * A plain call for the app's own use (the Muse mailbox), not offered to the model.
+   * Null when the server can't be reached.
+   */
+  async direct(name: string, input: Record<string, unknown>): Promise<{ text: string; isError: boolean; data: unknown } | null> {
+    if (!this.configured) return null;
+    if (!this.client && !(Date.now() >= this.retryAt && (await this.connect()))) return null;
+    if (!this.has(name)) return null;
+    try {
+      return await this.raw(name, input);
+    } catch (err) {
+      this.lastError = (err as Error).message;
+      this.client = null; // a dropped connection: reconnect next time
+      return null;
+    }
+  }
+
+  /** The tools that can't delete anything: what a message arriving by text (through Muse) may use. */
+  safeTools(): Anthropic.Tool[] {
+    this.preload();
+    return this.connected ? this.list.filter((t) => !t.destructive).map((t) => t.tool) : [];
+  }
+
   private has(name: string): boolean {
     return this.list.some((t) => t.name === name);
   }

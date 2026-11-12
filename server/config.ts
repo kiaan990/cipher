@@ -41,6 +41,12 @@ export const config = {
   timezone: validZone(env("TIMEZONE")) || (hosted ? "America/New_York" : Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York"),
   /** "deletes" (default): only deleting on the cloud server asks first. "all": every change asks first. */
   cloudConfirm: env("CLOUD_CONFIRM", "deletes").toLowerCase() === "all" ? ("all" as const) : ("deletes" as const),
+  /**
+   * The link with Muse (Meta's assistant, which uses the same cloud server): Cipher answers
+   * messages Muse leaves there. On by default on your Mac, off on the hosted copy so the
+   * two don't both answer. MUSE_LINK=on / off overrides.
+   */
+  museLink: env("MUSE_LINK") ? /^(on|true|1|yes)$/i.test(env("MUSE_LINK")) : !hosted,
   /** The calendar new events go in when none fits better. */
   cloudDefaultCalendar: env("CLOUD_DEFAULT_CALENDAR", "Personal"),
 

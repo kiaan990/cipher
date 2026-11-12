@@ -10,6 +10,7 @@ import { browser } from "./browser.js";
 import { voice } from "./tts.js";
 import { preloadSmartTurn } from "./smartturn.js";
 import { cloud } from "./cloud.js";
+import { muse } from "./muse.js";
 import { phrases } from "./tts.js";
 import { installAuth, isSignedIn, authEnabled } from "./auth.js";
 import { installPermissionRoutes } from "./permissions.js";
@@ -132,6 +133,7 @@ server.listen(config.port, config.hosted ? "0.0.0.0" : "127.0.0.1", () => {
   }
   preloadSmartTurn();
   cloud.preload();
+  muse.start();
   // Common openers ("Oh, nice!", "Got it.") recorded ahead, so replies can start instantly.
   setTimeout(() => void phrases.warm(), 5000);
   if (config.openBrowser) {
