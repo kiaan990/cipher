@@ -65,6 +65,8 @@ export interface RunOptions {
   macNote?: string;
   tools?: Anthropic.Tool[];
   runTool?: (call: Anthropic.ToolUseBlock, signal: AbortSignal) => Promise<Anthropic.ToolResultBlockParam>;
+  /** True for calls that may run at the same time as the others in one step. */
+  parallel?: (call: Anthropic.ToolUseBlock) => boolean;
   /** The model for this reply (the stronger one for tasks). Default: the fast speech model. */
   model?: string;
   /** A few words to say before a slow lookup when the reply hasn't said anything yet ("One sec."). */
@@ -274,17 +276,32 @@ export class AssistantTurn {
         for (const sentence of this.chunker.flush()) this.enqueue(sentence);
         this.needSpace = Boolean(this.text);
         messages.push({ role: "assistant", content: final.content });
-        const results: Anthropic.ToolResultBlockParam[] = [];
-        for (const call of calls) {
-          if (this.aborted) return "aborted";
+        // Calls that can't get in each other's way (the cloud server's) all go at once;
+        // the rest (the Mac, the browser) keep their order, one after another.
+        const results: Anthropic.ToolResultBlockParam[] = new Array(calls.length);
+        const runOne = async (call: Anthropic.ToolUseBlock, i: number): Promise<void> => {
+          if (this.aborted) return;
           const t0 = performance.now();
-          const result = await opts.runTool(call, this.abortCtl.signal);
-          results.push(result);
+          let result: Anthropic.ToolResultBlockParam;
+          try {
+            result = await opts.runTool!(call, this.abortCtl.signal);
+          } catch (err) {
+            result = { type: "tool_result", tool_use_id: call.id, content: `That failed: ${(err as Error)?.message ?? err}`, is_error: true };
+          }
+          results[i] = result;
+          console.log(`[tool] turn ${this.id}: ${call.name} asked for at ${Math.round(t0 - this.t0)} ms, took ${Math.round(performance.now() - t0)} ms`);
+        };
+        const together = calls.map((c) => Boolean(opts.parallel?.(c)));
+        const side = Promise.all(calls.map((c, i) => (together[i] ? runOne(c, i) : null)));
+        for (let i = 0; i < calls.length; i++) if (!together[i]) await runOne(calls[i], i);
+        await side;
+        if (this.aborted) return "aborted";
+        calls.forEach((call, i) => {
+          const result = results[i];
           // "Not done yet: needs their OK" is neither done nor failed; the note must not say "ok".
           const waiting = typeof result.content === "string" && /^Not (done|started) yet/.test(result.content);
           this.toolNotes.push(`${call.name}${briefInput(call.input)} (${waiting ? "not done, waiting for the user's OK" : result.is_error ? "failed" : "ok"})`);
-          console.log(`[tool] turn ${this.id}: ${call.name} asked for at ${Math.round(t0 - this.t0)} ms, took ${Math.round(performance.now() - t0)} ms`);
-        }
+        });
         if (this.aborted) return "aborted";
         messages.push({ role: "user", content: results });
       }
@@ -528,6 +545,7 @@ export function warmModel(opts: Pick<RunOptions, "macNote" | "tools">): void {
  * catches the genuinely slow ones.
  */
 const HEDGE_AFTER_MS = 900;
+const SLOW_HEDGE_AFTER_MS = 6000;
 
 interface ReplyStream extends AsyncIterable<Anthropic.MessageStreamEvent> {
   finalMessage(): Promise<Anthropic.Message>;
@@ -588,12 +606,15 @@ async function hedgedStream(params: Anthropic.MessageStreamParams, signal: Abort
   };
 
   open();
+  // The bigger model used for tasks normally takes a second or two to start, so a backup
+  // after 900 ms would double every one of its requests for nothing.
+  const after = params.model === config.anthropicModel ? HEDGE_AFTER_MS : SLOW_HEDGE_AFTER_MS;
   const hedge = setTimeout(() => {
     if (!winner && !signal.aborted && lanes.length === 1) {
-      console.log(`[claude] turn ${turnId}: no words after ${HEDGE_AFTER_MS} ms, sending a backup request`);
+      console.log(`[claude] turn ${turnId}: no words after ${after} ms, sending a backup request`);
       open();
     }
-  }, HEDGE_AFTER_MS);
+  }, after);
   const lane = await decided;
   clearTimeout(hedge);
   if (!lane) throw new Error("no reply");

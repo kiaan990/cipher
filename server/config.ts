@@ -37,6 +37,8 @@ export const config = {
    * (calendar, tasks, deadlines). "off" (or the same name as ANTHROPIC_MODEL) uses one model for everything.
    */
   toolModel: env("ANTHROPIC_TOOL_MODEL", "claude-sonnet-5-5"),
+  /** The model behind `do_task`: multi-step work done in the background. */
+  workerModel: env("WORKER_MODEL", "claude-opus-5-5"),
   /** The user's time zone, for "today" and "next Tuesday". On a hosted server the machine's own zone is not theirs. */
   timezone: validZone(env("TIMEZONE")) || (hosted ? "America/New_York" : Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York"),
   /** "deletes" (default): only deleting on the cloud server asks first. "all": every change asks first. */
@@ -48,7 +50,7 @@ export const config = {
    */
   museLink: env("MUSE_LINK") ? /^(on|true|1|yes)$/i.test(env("MUSE_LINK")) : !hosted,
   /** The calendar new events go in when none fits better. */
-  cloudDefaultCalendar: env("CLOUD_DEFAULT_CALENDAR", "Personal"),
+  cloudDefaultCalendar: env("CLOUD_DEFAULT_CALENDAR", ""),
 
   deepgramKey: env("DEEPGRAM_API_KEY"),
   deepgramModel: env("DEEPGRAM_MODEL", "nova-3"),

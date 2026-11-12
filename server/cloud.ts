@@ -14,8 +14,9 @@ import { addDays, dateOf, daysBetween, longDate, relative, today, weekdayLegend 
  * CLOUD_CONFIRM=all to ask before every change).
  *
  * Cipher does not leave the details to the model. Before an event is added it picks a
- * real calendar, refuses dates that are plainly in the past, and skips duplicates; after,
- * it reads the calendar back and tells the model exactly what is now there.
+ * real calendar (by rule, never a silent guess), refuses dates that are plainly in the
+ * past, and skips duplicates; after, it tells the model exactly what is now there.
+ * Calendar reads are kept for a few seconds and handed over as short lines, not raw JSON.
  * The URL and token come from .env (KIAAN_MCP_URL, KIAAN_MCP_TOKEN) and stay on the server.
  */
 
@@ -37,7 +38,36 @@ interface CalEvent {
   end?: string;
   all_day?: boolean;
   calendar?: string;
+  location?: string;
+  notes?: string;
 }
+
+type RawResult = { text: string; isError: boolean; data: unknown };
+
+/** How long a calendar read is reused. Short: the calendar can change from elsewhere. */
+const READS_FRESH_MS = 20_000;
+
+interface CachedRead {
+  at: number;
+  /** The whole days this read covers (start inclusive, end exclusive); "" if unknown. */
+  start: string;
+  end: string;
+  /** False when the read was narrowed (to one calendar, say), so it can't stand in for a day. */
+  whole: boolean;
+  promise: Promise<RawResult>;
+}
+
+/**
+ * Which calendar an event belongs in when none was named, by what it is. Checked in
+ * order; only calendars that exist are used.
+ */
+const CALENDAR_RULES: Array<[string, RegExp]> = [
+  ["University", /\b(speakers?|guest (talk|lecture)|lectures?|seminars?|campus|class(es)?|exams?|midterms?|finals|final exam|university|college|professor|office hours|advis[eo]r|club|career fair|study group|orientation|workshop|recitation)\b/i],
+  ["Travel", /\b(flights?|airport|hotel|trip|airbnb|boarding|layover)\b/i],
+  ["Fitness", /\b(gym|workout|work out|go(ing)? for a run|running|yoga|lifting|weights|pilates|swim(ming)?|hik(e|ing)|basketball|soccer|tennis)\b/i],
+  ["Work", /\b(shift|clients?|stand-?up|coworkers?|boss|manager|payroll)\b/i],
+  ["Personal", /\b(dinner|lunch|brunch|birthday|doctor|dentist|haircut|party|family|mom|dad|friends?|appointment|movie|concert)\b/i],
+];
 
 /** "ST-113", "st 113", "Personal " -> "st113", "personal": how names are compared. */
 const norm = (s: unknown) => String(s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -58,6 +88,54 @@ function unwrap(text: string): unknown {
   } catch {
     return null;
   }
+}
+
+/** A promise that also gives up when the caller is cancelled (the work itself carries on for others). */
+function orAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new Error("Cancelled."));
+    if (signal.aborted) return onAbort();
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
+/**
+ * Events as short lines, earliest first, instead of the server's raw JSON: a week is
+ * about a quarter of the size, which is most of what made calendar answers slow.
+ */
+function formatEvents(list: CalEvent[]): string {
+  const events = list.filter((e) => e && typeof e === "object");
+  if (!events.length) return "No events in that range.";
+  const notesMax = events.length <= 12 ? 160 : 60;
+  const sorted = [...events].sort((a, b) => String(a.start ?? "").localeCompare(String(b.start ?? "")));
+  const lines = sorted.map((e) => {
+    const date = dateOf(e.start);
+    let when: string;
+    if (e.all_day || !clockTime(e.start)) {
+      const last = dateOf(e.end) ? addDays(dateOf(e.end), -1) : date;
+      when = date && last > date ? `all day, through ${last}` : "all day";
+    } else {
+      const endDate = dateOf(e.end);
+      const endTime = clockTime(e.end);
+      when = clockTime(e.start) + (endTime ? `–${endDate && endDate !== date ? `${endDate} ` : ""}${endTime}` : "");
+    }
+    const notes = String(e.notes ?? "").replace(/\s+/g, " ").trim();
+    const place = String(e.location ?? "").replace(/\s+/g, " ").trim();
+    return [
+      `- ${date || String(e.start ?? "?")}`,
+      when,
+      String(e.title ?? "(no title)").trim(),
+      `calendar: ${String(e.calendar ?? "?").trim()}`,
+      place ? `at: ${place.slice(0, 80)}` : "",
+      e.uid ? `uid: ${e.uid}` : "",
+      notes ? `notes: ${notes.length > notesMax ? `${notes.slice(0, notesMax)}…` : notes}` : "",
+    ]
+      .filter(Boolean)
+      .join(" | ");
+  });
+  return [`${events.length} event${events.length === 1 ? "" : "s"}, earliest first (times are local):`, ...lines].join("\n");
 }
 
 /** "2026-11-17T14:30-05:00" -> "2:30 PM" ("" for a date with no time). */
@@ -84,6 +162,10 @@ class Cloud {
   private briefs: { at: number; names: string[] } = { at: 0, names: [] };
   /** The calendars' real names, exactly as the server spells them (some end in a space). */
   private calendars: string[] = [];
+  /** Calendar reads from the last few seconds, so the same days aren't fetched twice. */
+  private reads = new Map<string, CachedRead>();
+  /** Events being added right now, so the same one asked for twice at once is added once. */
+  private creating = new Set<string>();
   lastError = "";
 
   get configured(): boolean {
@@ -195,7 +277,7 @@ class Cloud {
   }
 
   /** One call to the server, with no checks: text back, and whether it failed. */
-  private async raw(name: string, input: Record<string, unknown>, signal?: AbortSignal): Promise<{ text: string; isError: boolean; data: unknown }> {
+  private async raw(name: string, input: Record<string, unknown>, signal?: AbortSignal): Promise<RawResult> {
     const timeout = AbortSignal.timeout(CALL_TIMEOUT_MS);
     const r = await this.client!.callTool({ name, arguments: input }, undefined, { signal: signal ? AbortSignal.any([signal, timeout]) : timeout, timeout: CALL_TIMEOUT_MS });
     const parts = (r.content as Array<{ type: string; text?: string }> | undefined) ?? [];
@@ -234,6 +316,12 @@ class Cloud {
   safeTools(): Anthropic.Tool[] {
     this.preload();
     return this.connected ? this.list.filter((t) => !t.destructive).map((t) => t.tool) : [];
+  }
+
+  /** The tools that never need the user's OK: what background work may use without being able to ask. */
+  freeTools(): Anthropic.Tool[] {
+    this.preload();
+    return this.connected ? this.list.filter((t) => !this.needsOk(t)).map((t) => t.tool) : [];
   }
 
   private has(name: string): boolean {
@@ -326,17 +414,94 @@ class Cloud {
     });
   }
 
+  /**
+   * Read events, reusing a read of the same range made in the last few seconds (or one
+   * still on its way). The read isn't tied to one caller, so a cancelled caller doesn't
+   * spoil it for the others.
+   */
+  private readEvents(input: Record<string, unknown>, signal?: AbortSignal): Promise<RawResult> {
+    const key = JSON.stringify(input);
+    const now = Date.now();
+    for (const [k, v] of this.reads) if (now - v.at > READS_FRESH_MS) this.reads.delete(k);
+    let hit = this.reads.get(key);
+    if (!hit) {
+      const hasTime = (v: unknown) => /T\d{2}:/.test(String(v ?? ""));
+      const start = dateOf(input.start);
+      const entry: CachedRead = {
+        at: now,
+        start: start && hasTime(input.start) ? addDays(start, 1) : start,
+        end: dateOf(input.end),
+        whole: Object.keys(input).every((k) => k === "start" || k === "end"),
+        promise: this.raw("calendar_events", input),
+      };
+      const drop = () => {
+        if (this.reads.get(key) === entry) this.reads.delete(key);
+      };
+      entry.promise.then((r) => {
+        if (r.isError || !Array.isArray(r.data)) drop();
+        else this.remember(r.data);
+      }, drop);
+      this.reads.set(key, entry);
+      hit = entry;
+    }
+    return orAbort(hit.promise, signal);
+  }
+
+  /** What is on the calendar on one day (null if it couldn't be read). */
   private async eventsOn(date: string, signal?: AbortSignal): Promise<CalEvent[] | null> {
     if (!this.has("calendar_events")) return null;
+    const onDay = (r: RawResult) => (r.isError || !Array.isArray(r.data) ? null : (r.data as CalEvent[]).filter((e) => e && dateOf(e.start) === date));
     try {
-      const r = await this.raw("calendar_events", { start: date, end: addDays(date, 1) }, signal);
-      const v = r.data;
-      if (r.isError || !Array.isArray(v)) return null;
-      this.remember(v);
-      return (v as CalEvent[]).filter((e) => e && dateOf(e.start) === date);
+      // A week read a moment ago already holds this day.
+      const now = Date.now();
+      const covering = [...this.reads.values()].find((v) => v.whole && now - v.at <= READS_FRESH_MS && v.start && v.end && v.start <= date && date < v.end);
+      if (covering) {
+        const got = await orAbort(covering.promise, signal).then(onDay, () => null);
+        if (got) return got;
+        if (signal?.aborted) return null;
+      }
+      return onDay(await this.readEvents({ start: date, end: addDays(date, 1) }, signal));
     } catch {
       return null;
     }
+  }
+
+  /** Put a just-added event into the reads being kept, so they stay true without reading again. */
+  private noteCreated(made: CalEvent): void {
+    const date = dateOf(made.start);
+    for (const [key, v] of this.reads) {
+      if (!v.whole || !v.start || !v.end || !date) this.reads.delete(key);
+      else if (v.start <= date && date < v.end) void v.promise.then((r) => Array.isArray(r.data) && (r.data as CalEvent[]).push(made), () => {});
+    }
+    this.remember([made]);
+  }
+
+  /**
+   * The calendar an event goes in. Never a silent guess: the one named, else the course
+   * it mentions, else a rule by what it is (a speaker event is University), else the
+   * default if one was set. Otherwise the model is told to ask.
+   */
+  private pickCalendar(args: Record<string, unknown>, user: UserTurn): { calendar: string; how: "named" | "course" | "rule" | "default" } | { stop: string } {
+    const names = this.calendars.map((c) => c.trim()).join(", ");
+    const named = typeof args.calendar === "string" && args.calendar.trim() ? args.calendar : "";
+    if (named) {
+      const real = this.matchCalendar(named);
+      return real ? { calendar: real, how: "named" } : { stop: `Not done: there is no calendar called "${named}". The calendars are: ${names}. Call this again with one of those.` };
+    }
+    const about = `${args.title ?? ""} ${args.notes ?? ""}`;
+    const course = this.courseCalendar(about) ?? this.courseCalendar(user.text);
+    if (course) return { calendar: course, how: "course" };
+    const rules = (text: string) => CALENDAR_RULES.filter(([name, re]) => re.test(text) && this.matchCalendar(name)).map(([name]) => this.matchCalendar(name)!);
+    const byEvent = rules(about);
+    if (byEvent.length) return { calendar: byEvent[0], how: "rule" };
+    // What the user said may cover several things at once, so it only counts when it points one way.
+    const bySaid = [...new Set(rules(user.text))];
+    if (bySaid.length === 1) return { calendar: bySaid[0], how: "rule" };
+    const fallback = this.matchCalendar(config.cloudDefaultCalendar);
+    if (fallback) return { calendar: fallback, how: "default" };
+    return {
+      stop: `Not done: no calendar was chosen and this one isn't obvious. The calendars are: ${names}. If one clearly fits what the user said, call this again with it as "calendar". Otherwise ask the user which calendar, in one short sentence, and wait.`,
+    };
   }
 
   /** Changes that wait for a spoken yes: deleting always; everything else only if set so. */
@@ -357,7 +522,7 @@ class Cloud {
    * date was given, no past dates by mistake, no duplicates. Returns either the corrected
    * input or the reply to give instead of calling the server.
    */
-  private async prepareEvent(args: Record<string, unknown>, user: UserTurn, signal: AbortSignal): Promise<{ args: Record<string, unknown> } | { stop: string; isError: boolean }> {
+  private async prepareEvent(args: Record<string, unknown>, user: UserTurn, signal: AbortSignal): Promise<{ args: Record<string, unknown>; picked: string } | { stop: string; isError: boolean }> {
     const date = dateOf(args.start);
     if (!date) return { stop: `Not done: "start" must be a date like ${addDays(today(), 1)} or a date and time like ${addDays(today(), 1)}T15:00. Take it from the clock note.`, isError: true };
     const past = this.pastDate(date, user);
@@ -365,14 +530,13 @@ class Cloud {
     const out = { ...args };
     if (/^\s*\d{4}-\d{2}-\d{2}\s*$/.test(String(args.start))) out.all_day = true;
 
+    let picked = "";
     if (!this.calendars.length) await this.loadCalendars();
     if (this.calendars.length) {
-      const named = typeof args.calendar === "string" && args.calendar.trim() ? args.calendar : "";
-      const real = named
-        ? this.matchCalendar(named)
-        : this.courseCalendar(`${args.title ?? ""} ${args.notes ?? ""}`) ?? this.courseCalendar(user.text) ?? this.matchCalendar(config.cloudDefaultCalendar);
-      if (named && !real) return { stop: `Not done: there is no calendar called "${named}". The calendars are: ${this.calendars.map((c) => c.trim()).join(", ")}. Call this again with one of those.`, isError: true };
-      if (real) out.calendar = real;
+      const choice = this.pickCalendar(args, user);
+      if ("stop" in choice) return { stop: choice.stop, isError: true };
+      out.calendar = choice.calendar;
+      if (choice.how !== "named") picked = choice.how;
     }
 
     const there = await this.eventsOn(date, signal);
@@ -381,7 +545,7 @@ class Cloud {
       const when = same.all_day ? "all day" : `at ${clockTime(same.start)}`;
       return { stop: `Already there, nothing added: "${same.title}" is on ${longDate(date)}, ${when}, in the ${String(same.calendar ?? "").trim()} calendar. Tell the user it's already on their calendar for that day.`, isError: false };
     }
-    return { args: out };
+    return { args: out, picked };
   }
 
   /** After adding an event, read the day back and say exactly what is there. */
@@ -429,6 +593,11 @@ class Cloud {
     return name.startsWith(PREFIX) && this.list.some((t) => PREFIX + t.name === name);
   }
 
+  /** True for a tool that only looks something up. */
+  isRead(name: string): boolean {
+    return this.list.find((t) => PREFIX + t.name === name)?.readOnly ?? false;
+  }
+
   describe(): string {
     if (!this.configured) return "";
     if (!this.connected)
@@ -440,7 +609,10 @@ class Cloud {
         ? "- Looking things up needs no permission. Anything that adds, changes, completes or deletes something needs their OK: call the tool, and if it says it needs approval, ask them in one short sentence and wait."
         : "- Looking things up, adding events and tasks, changing them and marking them done all run straight away: when they ask for one, call the tool at once, don't ask \"shall I?\" first. Only deleting needs their OK: call the tool, and when it says it needs approval, ask in one short sentence what you'd delete and wait.",
       "- Their calendar and tasks live on this server (it syncs to Apple Calendar on its own). For anything about calendar events or tasks use only the cloud_ tools: never the Mac's Calendar or Reminders apps, never the screen.",
-      this.calendars.length ? `- Their calendars: ${this.calendars.map((c) => c.trim()).join(", ")}. School work goes in that course's calendar (an ST-113 project goes in ST-113); if nothing fits, leave "calendar" out and the app picks one.` : "",
+      this.calendars.length
+        ? `- Their calendars: ${this.calendars.map((c) => c.trim()).join(", ")}. When adding an event, always give "calendar". School work goes in that course's calendar (an ST-113 project goes in ST-113); talks, speakers and campus events go in University. If it isn't clear which calendar, ask which one in a few words; never guess. Always say which calendar it went in.`
+        : "",
+      "- When you need several things from the cloud server (two days, tasks and the calendar, several events to add), ask for them all in the same step: they run at the same time.",
       "- Dates: write them as YYYY-MM-DD, taken from the clock note in their message or from the task or brief the date came from. Never work a date out from memory. For something that is due on a day, or has no time, give just the date as \"start\" (it becomes an all-day event). For a time, use YYYY-MM-DDTHH:MM in their local time.",
       "- To put a task or assignment on the calendar, look it up first (cloud_tasks_list or the brightspace brief) and use its real due date and name.",
       "- Never say something was added, changed or deleted unless the tool result says so. After adding an event, tell them the weekday, the date and the calendar, exactly as the result gives them. If a result says \"Not done\", it didn't happen: fix what it says and call again, or tell them.",
@@ -481,8 +653,10 @@ class Cloud {
       return result(`Couldn't reach the cloud server: ${this.lastError}`, true);
     }
     report(event);
+    let creatingKey = "";
+    let picked = "";
     try {
-      const ask = (input: Record<string, unknown>) => this.raw(t.name, input, signal);
+      const ask = (input: Record<string, unknown>) => (t.name === "calendar_events" ? this.readEvents(input, signal) : this.raw(t.name, input, signal));
       const stop = (text: string, isError: boolean) => {
         report({ ...event, status: isError ? "failed" : "done", detail: text.slice(0, 200) });
         console.log(`[cloud] ${t.name} ${isError ? "refused by the app" : "skipped"}: ${text.slice(0, 120)}`);
@@ -493,6 +667,12 @@ class Cloud {
         const ready = await this.prepareEvent(args, user, signal);
         if ("stop" in ready) return stop(ready.stop, ready.isError);
         args = ready.args;
+        picked = ready.picked;
+        // The same event asked for twice in one step: the second waits for nothing and adds nothing.
+        const key = `${dateOf(args.start)}|${norm(args.title)}|${norm(args.calendar)}`;
+        if (this.creating.has(key)) return stop(`Already being added, nothing added twice: "${args.title}" on ${longDate(dateOf(args.start))} is being added by another call in this same step.`, false);
+        this.creating.add(key);
+        creatingKey = key;
       } else if ((t.name === "tasks_add" || t.name === "tasks_update") && args.due) {
         const past = this.pastDate(dateOf(args.due), user);
         if (past) return stop(past, true);
@@ -518,6 +698,7 @@ class Cloud {
         }
       }
       let text = r.text;
+      if (t.name === "calendar_events" && !r.isError && Array.isArray(r.data)) text = formatEvents(r.data as CalEvent[]);
       const limit = isBrief ? MAX_BRIEF_CHARS : MAX_RESULT_CHARS;
       if (text.length > limit) text = text.slice(0, limit) + "\n…(cut short)";
       let failed = r.isError;
@@ -529,6 +710,7 @@ class Cloud {
         const local = known ? await this.deleteOnMac(known, signal) : null;
         if (local === "deleted") {
           failed = false;
+          this.reads.clear();
           this.seen.delete(known!.uid!);
           text = `Deleted: "${known!.title}" on ${longDate(dateOf(known!.start))} has been removed from the ${known!.calendar!.trim()} calendar (through the Calendar app on this Mac, since the cloud server couldn't find it).`;
           console.log(`[cloud] calendar_delete_event: the server said no, removed in the Calendar app instead`);
@@ -540,9 +722,22 @@ class Cloud {
       }
       if (!failed) {
         if (t.name === "calendar_list_calendars") this.readCalendars(r.data);
-        if (isCreate) text += `\n${await this.confirmEvent(args, String((r.data as { uid?: unknown } | null)?.uid ?? ""), signal)}`;
-        if (t.name === "calendar_events") this.remember(r.data);
-        if (t.name === "calendar_events") text += "\n[All-day events list their end as the following day; they are on the start day only.]";
+        if (t.name === "calendar_delete_event") this.reads.clear();
+        if (isCreate) {
+          const uid = String((r.data as { uid?: unknown } | null)?.uid ?? "");
+          const date = dateOf(args.start);
+          if (uid && typeof args.calendar === "string") {
+            // The server gave the new event's id, so it is there: no need to read the day back.
+            const made: CalEvent = { uid, title: String(args.title ?? ""), start: String(args.start), end: args.end ? String(args.end) : undefined, all_day: args.all_day === true, calendar: args.calendar, location: args.location ? String(args.location) : undefined, notes: args.notes ? String(args.notes) : undefined };
+            this.noteCreated(made);
+            const when = made.all_day ? "all day" : `at ${clockTime(made.start)}`;
+            text += `\n[Confirmed by the cloud server: "${made.title}" is now on ${longDate(date)} (${relative(date)}), ${when}, in the ${args.calendar.trim()} calendar. Tell the user exactly that: the day, the date and the calendar.]`;
+          } else {
+            this.reads.clear();
+            text += `\n${await this.confirmEvent(args, uid, signal)}`;
+          }
+          if (picked) text += `\n[The calendar wasn't named, so the app chose ${String(args.calendar ?? "").trim()} ${picked === "default" ? "as the default" : picked === "course" ? "from the course it mentions" : "from what kind of event it is"}. Say the calendar so they can correct it.]`;
+        }
         const legend = isBrief ? "" : weekdayLegend(text);
         if (legend) text += `\n${legend}`;
       }
@@ -555,6 +750,8 @@ class Cloud {
       // A dropped connection: reconnect next time.
       if (!signal.aborted) this.client = null;
       return result(`The cloud server didn't answer: ${msg}`, true);
+    } finally {
+      if (creatingKey) this.creating.delete(creatingKey);
     }
   }
 }

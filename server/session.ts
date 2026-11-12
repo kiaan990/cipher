@@ -23,12 +23,15 @@ import type { TurnOutput } from "./tts.js";
 import { listening, blendVoice } from "./listening.js";
 import { jobs, ago, type Job } from "./jobs.js";
 import { delegate } from "./delegate.js";
+import { worker } from "./worker.js";
 import { targets } from "./targets.js";
 
 /** A tool still running after this long carries on as a background job. */
 const JOB_AFTER_MS = Number(process.env.JOB_AFTER_MS ?? 4000);
 /** Cloud tools are slower by nature (a network hop each way), so they get longer. */
 const CLOUD_JOB_AFTER_MS = Number(process.env.CLOUD_JOB_AFTER_MS ?? 8000);
+/** Adding or changing something is said as "on it" and finished in the background sooner than a lookup, whose answer the reply needs. */
+const CLOUD_WRITE_JOB_AFTER_MS = Number(process.env.CLOUD_WRITE_JOB_AFTER_MS ?? 4000);
 /** Mac tools that can safely finish on their own after the reply has moved on. */
 const DETACHABLE = new Set(["run_command", "run_applescript"]);
 const NOTE_START = "[Background job";
@@ -1214,6 +1217,8 @@ export class VoiceSession {
         memoryNote: [memory.describe(), jobs.describe()].filter(Boolean).join("\n\n"),
         ...this.toolContext(),
         preamble: (call) => (cloud.owns(call.name) ? cloud.preamble(call.name) : undefined),
+        // Cloud calls asked for together run side by side.
+        parallel: (call) => cloud.owns(call.name),
         runTool: async (call, signal) => {
           // Nothing happens on the Mac or in Chrome until the voice check has passed.
           while (this.verify?.turnId === turn.id && !signal.aborted) await new Promise((r) => setTimeout(r, 30));
@@ -1223,7 +1228,8 @@ export class VoiceSession {
           if (call.name === "jobs_status" || call.name === "job_cancel") return this.jobTool(call);
           if (muse.owns(call.name)) return muse.run(call);
           if (delegate.owns(call.name)) return delegate.run(call, mac.mode, user, report as any);
-          if (cloud.owns(call.name)) return this.orJob(call, signal, CLOUD_JOB_AFTER_MS, (s) => cloud.run(call, user, s, report as any));
+          if (worker.owns(call.name)) return worker.run(call, user, report as any);
+          if (cloud.owns(call.name)) return this.orJob(call, signal, cloud.isRead(call.name) ? CLOUD_JOB_AFTER_MS : CLOUD_WRITE_JOB_AFTER_MS, (s) => cloud.run(call, user, s, report as any));
           if (call.name.startsWith("browser_")) return browser.run(call, mac.mode, user, signal, report as any);
           if (DETACHABLE.has(call.name)) return this.orJob(call, signal, JOB_AFTER_MS, (s) => mac.run(call, user, s, report as any));
           return mac.run(call, user, signal, report as any);
@@ -1257,8 +1263,8 @@ export class VoiceSession {
 
   private toolContext(): { macNote: string; tools: Anthropic.Tool[] } {
     return {
-      macNote: [describeAppControl(), mac.describe(), browser.describe(mac.mode), cloud.describe(), muse.describe(), delegate.describe(mac.mode), JOBS_NOTE].filter(Boolean).join("\n\n"),
-      tools: [APP_TOOL, ...(mac.tools ?? []), ...browser.tools(mac.mode), ...cloud.tools(), ...muse.tools(), ...delegate.tools(mac.mode), ...JOB_TOOLS],
+      macNote: [describeAppControl(), mac.describe(), browser.describe(mac.mode), cloud.describe(), muse.describe(), worker.describe(), delegate.describe(mac.mode), JOBS_NOTE].filter(Boolean).join("\n\n"),
+      tools: [APP_TOOL, ...(mac.tools ?? []), ...browser.tools(mac.mode), ...cloud.tools(), ...muse.tools(), ...worker.tools(), ...delegate.tools(mac.mode), ...JOB_TOOLS],
     };
   }
 
@@ -1288,7 +1294,7 @@ export class VoiceSession {
     // From here the work belongs to the job: ending or interrupting this reply won't stop it.
     signal.removeEventListener("abort", stop);
     const input = (call.input ?? {}) as Record<string, unknown>;
-    const title = String(input.purpose || input.command || input.script || call.name).replace(/\s+/g, " ").slice(0, 120);
+    const title = String(input.purpose || input.command || input.script || input.title || input.name || call.name).replace(/\s+/g, " ").slice(0, 120);
     const job = jobs.start(call.name, title, async () => {
       const r = await work;
       return { ok: !r.is_error, result: resultText(r) };
