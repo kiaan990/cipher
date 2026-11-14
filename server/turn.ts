@@ -4,7 +4,7 @@ import { nowNote } from "./clock.js";
 import type { CameraView } from "./vision.js";
 import { httpFetch } from "./net.js";
 import { SentenceChunker } from "./text.js";
-import { TtsPipeline, type TurnOutput } from "./tts.js";
+import { TtsPipeline, voiceTone, type TurnOutput } from "./tts.js";
 
 export const MOODS = ["calm", "happy", "excited", "curious", "thoughtful", "empathetic", "serious", "playful", "surprised"] as const;
 const MOOD_TAG = /^\[\s*mood\s*:\s*([a-z]+)\s*\]/i;
@@ -35,6 +35,7 @@ How to speak (sound like a warm, quick-witted person on a call, not an assistant
 Mood tag (required):
 - End every reply with exactly one mood tag in square brackets after your last sentence, like: Ooh, tell me more. [mood: curious]
 - Pick the mood that fits the emotional tone of your reply from: ${MOODS.join(", ")}.
+- Moods move slowly, the way a person's do. Keep the mood of your last reply unless what they just said really changes the feeling, and keep one even tone through the whole of a reply: don't swing from bright to grave between sentences.
 - The tag drives a visual on screen and is never spoken. Never mention it, and never put it anywhere but the very end.`;
 
 const client = config.anthropicKey ? new Anthropic({ apiKey: config.anthropicKey, maxRetries: 1, fetch: httpFetch }) : null;
@@ -425,6 +426,7 @@ export class AssistantTurn {
   private setMood(mood: string): void {
     if (!(MOODS as readonly string[]).includes(mood) || mood === this.mood) return;
     this.mood = mood;
+    voiceTone.mood(mood); // colours the next reply, never this one
     this.out.json({ type: "mood", turnId: this.id, mood });
   }
 

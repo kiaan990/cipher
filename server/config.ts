@@ -65,9 +65,9 @@ export const config = {
   elevenVoiceId: env("ELEVENLABS_VOICE_ID", "FGY2WhTYpPnrIDTdsKH5"),
   elevenModelId: env("ELEVENLABS_MODEL_ID", "eleven_flash_v2_5"),
   /** 0–1. Lower sounds more expressive and human, higher more even. */
-  elevenStability: clamp01(Number(env("ELEVENLABS_STABILITY", "0.38")), 0.38),
+  elevenStability: clamp01(Number(env("ELEVENLABS_STABILITY", "0.6")), 0.6),
   /** 0–1. A little style exaggeration adds emotion; too much adds latency and wobble. */
-  elevenStyle: clamp01(Number(env("ELEVENLABS_STYLE", "0.2")), 0.2),
+  elevenStyle: clamp01(Number(env("ELEVENLABS_STYLE", "0")), 0),
 
   /**
    * Semantic end-of-turn detection (Smart Turn, an open model from Hugging Face, run
