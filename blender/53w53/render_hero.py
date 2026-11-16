@@ -52,34 +52,35 @@ def shots():
     the automatic ray-cast camera picker: --auto-cams (keys with `auto`)."""
     street = ((-14.0, -20.0, 1.6), (24.0, 6.0, 120.0), 18.0)
     aerial = ((-420.0, -520.0, 420.0), (30.0, 40.0, 120.0), 35.0)
-    I = dict(samples=1.5, guiding=True, hl=16.0)   # interior defaults
+    I = dict(samples=0.75, guiding=False, hl=16.0)   # interior defaults (OIDN does the rest)
     return {
         "a": dict(name="street", cam=street, key=0.12, samples=1.0),
         "b": dict(name="aerial", cam=aerial, key=0.11, samples=0.8),
         "c": dict(name="aerial_dusk", cam=aerial, preset="dusk", fixed_ev=-1.6, samples=1.2),
         "d": dict(name="lobby", cam=((40.0, 3.0, 1.9), (12.0, 18.0, 3.3), 16.0),
-                  auto=(1, "deep", 18.0, math.radians(90)), key=0.18, wb=4300, **I),
+                  auto=(1, "deep", 18.0, math.radians(90)), key=0.12, wb=4600, **I),
         "e": dict(name="pool", cam=((33.5, 4.8, 30.7), (5.0, 4.5, 31.0), 16.0),
-                  auto=(6, "water", 18.0, None), key=0.16, wb=4500, **I),
+                  auto=(6, "water", 18.0, None), key=0.14, wb=4500, **I),
         "f": dict(name="apartment_f30", cam=((6.5, 23.0, 118.9), (6.0, 4.0, 118.3), 16.0),
-                  auto=(30, "view", 20.0, math.radians(225)), key=0.20, wb=5000, **I),
+                  auto=(30, "view", 20.0, math.radians(225)), key=0.16, wb=5000, **I),
         "g": dict(name="penthouse_f77", cam=((22.9, 25.2, 288.1), (23.0, 14.0, 287.9), 16.0),
-                  auto=(77, "view", 18.0, math.radians(270)), key=0.20, wb=5000, **I),
+                  auto=(77, "view", 18.0, math.radians(270)), key=0.16, wb=5000, **I),
         "h": dict(name="street_dusk", cam=street, preset="dusk", fixed_ev=-1.2, samples=1.2),
-        "i": dict(name="library", cam=((9.6, 21.5, 1.7), (3.8, 10.5, 1.6), 16.0), key=0.16, wb=4000, **I),
+        "i": dict(name="library", cam=((9.6, 21.5, 1.7), (3.8, 10.5, 1.6), 16.0), key=0.14, wb=4000, **I),
         "j": dict(name="wine_room_f07", cam=((10.2, 18.7, 36.1), (5.0, 10.5, 35.8), 16.0), key=0.12,
                   wb=3800, **I),
-        "k": dict(name="crown", cam=((5.0, 620.0, 110.0), (22.0, 16.0, 292.0), 200.0), key=0.12, samples=0.8),
+        "k": dict(name="crown", cam=((5.0, 620.0, 110.0), (22.0, 16.0, 292.0), 200.0), key=0.12, ev=1.5,
+                  samples=0.8),  # north side is in shade: sky dominates the meter
         "m": dict(name="crown_close", cam=((-60.0, 120.0, 300.0), (21.0, 14.0, 300.0), 50.0), key=0.12,
                   samples=0.8),
-        "l": dict(name="lobby_entrance", cam=((21.0, 1.2, 1.6), (21.0, 12.0, 3.2), 18.0), key=0.18,
+        "l": dict(name="lobby_entrance", cam=((21.0, 1.2, 1.6), (21.0, 12.0, 3.2), 18.0), key=0.12,
                   wb=4300, **I),
     }
 
 
 def parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else sys.argv[1:]
-    a = dict(shots="a,b,c,d,e,f,g,i,k", res=(1600, 900), samples=256, preset="day",
+    a = dict(shots="a,b,c,d,e,f,g,i,k", res=(1600, 900), samples=64, preset="day",
              blend=os.path.join(OUT, "53W53.blend"), rebuild=False, auto=True, exr=False)
     i = 0
     while i < len(argv):

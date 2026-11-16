@@ -910,7 +910,7 @@ RULES = [
     (_has("foliage", "leaf", "leaves", "grass", "hedge", "plant", "tree_crown", "ivy"), r_foliage, {}),
     # --- stone / marble
     (_has("noir", "marble_black", "nero", "laurent"), r_marble,
-     dict(vein=(0.80, 0.78, 0.74, 1), vein2=(0.75, 0.55, 0.25, 1), polish=0.05, scale=0.9, vein_width=0.025)),
+     dict(vein=(0.70, 0.68, 0.64, 1), vein2=(0.65, 0.48, 0.22, 1), polish=0.05, scale=1.6, vein_width=0.010)),
     (_has("statuary", "calacatta", "carrara", "marble"), r_marble,
      dict(vein=(0.42, 0.42, 0.43, 1), polish=0.08, scale=1.1)),
     (_has("travertine", "limestone", "verona"), r_stone, dict(rough=0.45, honed=True, joints=(1.2, 0.6), grain=120.0)),

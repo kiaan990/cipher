@@ -368,7 +368,7 @@ def preset_dusk(scene=None, exposure=0.0):
         nodes[nm].outputs[0].default_value = (c[0] * k, c[1] * k, c[2] * k, 1.0)
     color_management(scene, exposure, "Medium High Contrast", white_k=5200)
     cycles_settings(scene)
-    set_controls({"CTRL_CITY_GLOW": 0.5, "CTRL_INT_LIGHT": 4.0, "CTRL_STREET": 1.5,
+    set_controls({"CTRL_CITY_GLOW": 0.22, "CTRL_INT_LIGHT": 8.0, "CTRL_STREET": 1.5,
                   "CTRL_HAZE_DIST": 4500.0, "CTRL_HAZE_MAX": 0.9,
                   "CTRL_HAZE_COLOR": haze_color(scene)})
     scale_lamps(K * 6.0)
