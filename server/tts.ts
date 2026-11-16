@@ -58,6 +58,87 @@ class VoiceChoice {
 
 export const voice = new VoiceChoice();
 
+/**
+ * How the voice sounds from one reply to the next.
+ *
+ * A person's voice doesn't jump about: the pitch stays theirs, and their tone drifts with
+ * the conversation. So the settings are fixed for the whole of a reply, and the mood of a
+ * reply only colours the *next* one, and only part of the way: a real change of tone
+ * takes two or three exchanges to arrive. After a long quiet spell it is back to neutral.
+ */
+interface Tone {
+  stability: number;
+  style: number;
+  speed: number;
+}
+const round = (n: number) => Math.round(n * 100) / 100;
+/** Small nudges away from the usual voice. Stability stays high in all of them, which is what holds the pitch. */
+const MOOD_TONE: Record<string, Partial<Tone>> = {
+  calm: {},
+  thoughtful: { stability: 0.06, speed: -0.03 },
+  serious: { stability: 0.08, speed: -0.03 },
+  empathetic: { stability: 0.05, speed: -0.04 },
+  curious: { stability: -0.03 },
+  happy: { stability: -0.05, speed: 0.01 },
+  playful: { stability: -0.06, speed: 0.02 },
+  excited: { stability: -0.07, speed: 0.03 },
+  surprised: { stability: -0.05, speed: 0.01 },
+};
+const TONE_EASE = 0.5; // how far towards the new mood each reply moves
+const TONE_RESET_MS = 5 * 60_000;
+const CARRY_MS = 90_000;
+
+class VoiceTone {
+  private now: Tone = this.base();
+  private target: Tone = this.base();
+  private at = 0;
+  private tail = "";
+  private tailAt = 0;
+  /** One seed for as long as the app runs, so the same words come out the same way. */
+  readonly seed = Math.floor(Math.random() * 2_000_000_000);
+
+  private base(): Tone {
+    return { stability: config.elevenStability, style: config.elevenStyle, speed: 1 };
+  }
+
+  /** The mood a reply ended on. Only replies that start after this are affected. */
+  mood(mood: string): void {
+    const d = MOOD_TONE[mood] ?? {};
+    const b = this.base();
+    this.target = { stability: b.stability + (d.stability ?? 0), style: b.style + (d.style ?? 0), speed: b.speed + (d.speed ?? 0) };
+    this.at = Date.now();
+  }
+
+  /** The settings for a reply that is starting now: a step towards the last mood, then held. */
+  begin(): Tone {
+    if (Date.now() - this.at > TONE_RESET_MS) this.target = this.base();
+    const step = (a: number, b: number) => a + (b - a) * TONE_EASE;
+    this.now = {
+      stability: Math.min(0.9, Math.max(0.3, round(step(this.now.stability, this.target.stability)))),
+      style: Math.min(0.3, Math.max(0, round(step(this.now.style, this.target.style)))),
+      speed: Math.min(1.06, Math.max(0.94, round(step(this.now.speed, this.target.speed)))),
+    };
+    return { ...this.now };
+  }
+
+  /** The usual voice, for anything recorded once and reused. */
+  neutral(): Tone {
+    return this.base();
+  }
+
+  /** What was just said, so the next reply picks up in the same voice instead of starting cold. */
+  said(text: string): void {
+    this.tail = text.slice(-300);
+    this.tailAt = Date.now();
+  }
+
+  carry(): string {
+    return Date.now() - this.tailAt < CARRY_MS ? this.tail : "";
+  }
+}
+
+export const voiceTone = new VoiceTone();
+
 export interface TurnOutput {
   json(msg: Record<string, unknown>): void;
   audio(turnId: number, pcm: Buffer): void;
@@ -81,6 +162,9 @@ export class TtsPipeline {
   private doneSent = false;
   /** Number of sentences whose audio has started streaming to the browser. */
   private started = 0;
+  /** Fixed for the whole reply: the voice never shifts part-way through. */
+  private readonly tone: Tone;
+  private readonly carry: string;
 
   constructor(
     private readonly turnId: number,
@@ -88,7 +172,11 @@ export class TtsPipeline {
     private readonly out: TurnOutput,
     private readonly onDone: () => void,
     private readonly onFirstAudio: () => void = () => {},
-  ) {}
+    neutral = false,
+  ) {
+    this.tone = neutral ? voiceTone.neutral() : voiceTone.begin();
+    this.carry = neutral ? "" : voiceTone.carry();
+  }
 
   enqueue(text: string): void {
     this.items.push({ text });
@@ -107,6 +195,7 @@ export class TtsPipeline {
 
   /** No more sentences are coming. */
   finish(): void {
+    if (this.turnId > 0 && this.items.length) voiceTone.said(this.items.map((i) => i.text).join(" "));
     this.inputDone = true;
     void this.loop();
   }
@@ -157,10 +246,11 @@ export class TtsPipeline {
         body: JSON.stringify({
           text,
           model_id: config.elevenModelId,
-          ...(previous ? { previous_text: previous } : {}),
+          // The first sentence of a reply continues from the end of the last reply.
+          ...(previous || this.carry ? { previous_text: previous || this.carry } : {}),
+          seed: voiceTone.seed,
           ...(next ? { next_text: next } : {}),
-          // Lower stability = more expressive, conversational delivery (less "narrator").
-          voice_settings: { stability: config.elevenStability, similarity_boost: 0.75, style: config.elevenStyle, use_speaker_boost: true },
+          voice_settings: { stability: this.tone.stability, similarity_boost: 0.75, style: this.tone.style, speed: this.tone.speed, use_speaker_boost: true },
         }),
       });
       if (!res.ok) {
@@ -387,7 +477,7 @@ class PhraseCache {
       let made = 0;
       for (const text of OPENERS) {
         if (this.mem.has(text)) continue;
-        const pipe = new TtsPipeline(0, AbortSignal.timeout(20_000), { json: () => {}, audio: () => {} }, () => {});
+        const pipe = new TtsPipeline(0, AbortSignal.timeout(20_000), { json: () => {}, audio: () => {} }, () => {}, () => {}, true);
         const res = await (pipe as any).request(text).catch(() => null);
         if (!res?.body) continue;
         // Read it through so capture() saves it.

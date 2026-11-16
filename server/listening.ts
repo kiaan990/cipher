@@ -35,10 +35,10 @@ const DEFAULTS: ListeningSettings = {
   awakeSeconds: 15,
   voiceMatch: false,
   strictness: "normal",
-  focusSpeaker: true,
+  focusSpeaker: false,
 };
 /** Bumped when a default changes in a way saved settings should pick up once. */
-const SETTINGS_VERSION = 3;
+const SETTINGS_VERSION = 4;
 
 /** Similarity needed to count as you. Same voice scores ~0.9+, different people mostly well below. */
 const THRESHOLDS: Record<Strictness, number> = { relaxed: 0.8, normal: 0.86, strict: 0.91 };
@@ -73,6 +73,11 @@ class Listening {
       }
       // Version 3: the assistant is now called Cipher, so the old default wake phrase moves too.
       if (v < 3 && /^(hey )?claude$/i.test(this.settings.wakePhrase.trim())) this.settings.wakePhrase = "Cipher";
+      // Version 4: Cipher answers anyone who speaks to it. Locking onto one voice is opt-in again.
+      if (v < 4) {
+        this.settings.focusSpeaker = false;
+        this.settings.voiceMatch = false;
+      }
       if (v < SETTINGS_VERSION) saveJson(SETTINGS_FILE, { ...this.settings, v: SETTINGS_VERSION });
     } catch {
       /* first run */

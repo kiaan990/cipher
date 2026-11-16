@@ -11,9 +11,11 @@ import { APP_VERSION } from "./version.js";
 import { mac, type ControlMode } from "./mac.js";
 import { browser } from "./browser.js";
 import { cloud } from "./cloud.js";
+import { muse } from "./muse.js";
 import { APP_TOOL, describeAppControl, runAppControl, type AppCommandResult } from "./appcontrol.js";
 import { randomUUID } from "node:crypto";
-import { AssistantTurn, warmModel } from "./turn.js";
+import { AssistantTurn, pickModel, warmModel } from "./turn.js";
+import { approvals } from "./approvals.js";
 import { AudioTail, predictTurnComplete, smartTurnReady } from "./smartturn.js";
 import { backchannelClips, backchannelKinds, prepareBackchannels, CUE_ECHOES, type CueKind } from "./backchannel.js";
 import { phrases } from "./tts.js";
@@ -21,6 +23,7 @@ import type { TurnOutput } from "./tts.js";
 import { listening, blendVoice } from "./listening.js";
 import { jobs, ago, type Job } from "./jobs.js";
 import { delegate } from "./delegate.js";
+import { worker } from "./worker.js";
 import { targets } from "./targets.js";
 import { transcripts } from "./transcripts.js";
 import { wiki } from "./wiki.js";
@@ -31,6 +34,8 @@ import { recall, RECALL_TOOL, RECALL_NOTE } from "./recall.js";
 const JOB_AFTER_MS = Number(process.env.JOB_AFTER_MS ?? 4000);
 /** Cloud tools are slower by nature (a network hop each way), so they get longer. */
 const CLOUD_JOB_AFTER_MS = Number(process.env.CLOUD_JOB_AFTER_MS ?? 8000);
+/** Adding or changing something is said as "on it" and finished in the background sooner than a lookup, whose answer the reply needs. */
+const CLOUD_WRITE_JOB_AFTER_MS = Number(process.env.CLOUD_WRITE_JOB_AFTER_MS ?? 4000);
 /** Mac tools that can safely finish on their own after the reply has moved on. */
 const DETACHABLE = new Set(["run_command", "run_applescript"]);
 const NOTE_START = "[Background job";
@@ -372,7 +377,7 @@ export class VoiceSession {
         }
         break;
       case "vision_still":
-        this.vision.setStill(msg.jpeg);
+        this.vision.setStill(msg.jpeg, msg.earlier, msg.earlierAgoMs);
         break;
       case "vision":
         if (typeof msg.enabled === "boolean") this.vision.setEnabled(msg.enabled);
@@ -1212,15 +1217,20 @@ export class VoiceSession {
     // A note from the app is not the user speaking, so it can never count as their "yes".
     const user = { text: opts.note || typeof userText?.content !== "string" ? "" : userText.content.replace(NOTE_PATTERN, "").trim(), turn: this.userTurns };
     const image = this.vision.freshStill() ?? undefined;
-    if (image) console.log(`[vision] camera still sent with turn ${turn.id} (${Math.round((image.length * 3) / 4 / 1024)} KB)`);
+    if (image) console.log(`[vision] camera still sent with turn ${turn.id} (${Math.round((image.jpeg.length * 3) / 4 / 1024)} KB, ${(image.ageMs / 1000).toFixed(1)} s old${image.earlier ? ", plus the view from when they started speaking" : ""})`);
     else if (this.vision.enabled) console.log(`[vision] camera is on but no recent still for turn ${turn.id}`);
+    const model = pickModel(user.text, approvals.pending);
+    if (model) console.log(`[claude] turn ${turn.id}: a task, so ${model} answers`);
     turn
       .run([...this.history], {
         image,
+        model,
         sceneNote: this.vision.describe(),
         memoryNote: [memory.describe(), memory.enabled ? wiki.describe() : "", jobs.describe()].filter(Boolean).join("\n\n"),
         ...this.toolContext(),
         preamble: (call) => (cloud.owns(call.name) ? cloud.preamble(call.name) : undefined),
+        // Cloud calls asked for together run side by side.
+        parallel: (call) => cloud.owns(call.name),
         runTool: async (call, signal) => {
           // Nothing happens on the Mac or in Chrome until the voice check has passed.
           while (this.verify?.turnId === turn.id && !signal.aborted) await new Promise((r) => setTimeout(r, 30));
@@ -1229,8 +1239,10 @@ export class VoiceSession {
           if (call.name === "app_control") return runAppControl(call, user, (cmd) => this.appCommand(turn.id, cmd), report as any);
           if (call.name === "jobs_status" || call.name === "job_cancel") return this.jobTool(call);
           if (call.name === "recall") return recall.run(call);
+          if (muse.owns(call.name)) return muse.run(call);
           if (delegate.owns(call.name)) return delegate.run(call, mac.mode, user, report as any);
-          if (cloud.owns(call.name)) return this.orJob(call, signal, CLOUD_JOB_AFTER_MS, (s) => cloud.run(call, user, s, report as any));
+          if (worker.owns(call.name)) return worker.run(call, user, report as any);
+          if (cloud.owns(call.name)) return this.orJob(call, signal, cloud.isRead(call.name) ? CLOUD_JOB_AFTER_MS : CLOUD_WRITE_JOB_AFTER_MS, (s) => cloud.run(call, user, s, report as any));
           if (call.name.startsWith("browser_")) return browser.run(call, mac.mode, user, signal, report as any);
           if (DETACHABLE.has(call.name)) return this.orJob(call, signal, JOB_AFTER_MS, (s) => mac.run(call, user, s, report as any));
           return mac.run(call, user, signal, report as any);
@@ -1264,8 +1276,8 @@ export class VoiceSession {
 
   private toolContext(): { macNote: string; tools: Anthropic.Tool[] } {
     return {
-      macNote: [describeAppControl(), mac.describe(), browser.describe(mac.mode), cloud.describe(), delegate.describe(mac.mode), JOBS_NOTE, recall.available ? RECALL_NOTE : ""].filter(Boolean).join("\n\n"),
-      tools: [APP_TOOL, ...(mac.tools ?? []), ...browser.tools(mac.mode), ...cloud.tools(), ...delegate.tools(mac.mode), ...JOB_TOOLS, ...(recall.available ? [RECALL_TOOL] : [])],
+      macNote: [describeAppControl(), mac.describe(), browser.describe(mac.mode), cloud.describe(), muse.describe(), worker.describe(), delegate.describe(mac.mode), JOBS_NOTE, recall.available ? RECALL_NOTE : ""].filter(Boolean).join("\n\n"),
+      tools: [APP_TOOL, ...(mac.tools ?? []), ...browser.tools(mac.mode), ...cloud.tools(), ...muse.tools(), ...worker.tools(), ...delegate.tools(mac.mode), ...JOB_TOOLS, ...(recall.available ? [RECALL_TOOL] : [])],
     };
   }
 
@@ -1295,7 +1307,7 @@ export class VoiceSession {
     // From here the work belongs to the job: ending or interrupting this reply won't stop it.
     signal.removeEventListener("abort", stop);
     const input = (call.input ?? {}) as Record<string, unknown>;
-    const title = String(input.purpose || input.command || input.script || call.name).replace(/\s+/g, " ").slice(0, 120);
+    const title = String(input.purpose || input.command || input.script || input.title || input.name || call.name).replace(/\s+/g, " ").slice(0, 120);
     const job = jobs.start(call.name, title, async () => {
       const r = await work;
       return { ok: !r.is_error, result: resultText(r) };

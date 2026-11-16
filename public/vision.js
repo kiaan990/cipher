@@ -31,7 +31,6 @@ export class Vision {
     this.frameId = 0;
     this.tracks = []; // boxes being drawn, eased toward their latest positions
     this.lastKey = "";
-    this.pendingKey = "";
     this.lastSent = 0;
     this.knownLabels = new Set();
     this.timer = null;
@@ -44,7 +43,9 @@ export class Vision {
     this.setStatus({ status: "starting" });
     if (!navigator.mediaDevices?.getUserMedia) throw new Error("This browser can't use a camera here.");
     this.stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
+      // Ask for a sharp picture: detection shrinks it anyway, but the stills Claude looks at
+      // (text on a page, a label, what's in your hand) need the detail.
+      video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
       audio: false,
     });
     this.on = true;
@@ -103,7 +104,9 @@ export class Vision {
     this.video.srcObject = null;
     this.tracks = [];
     this.knownLabels.clear();
-    this.lastKey = this.pendingKey = "";
+    this.lastKey = "";
+    this.prevCounts = {};
+    this.held = {};
     this.ctx.clearRect(0, 0, this.overlay.width, this.overlay.height);
     this.setStatus({ status: "off" });
   }
@@ -194,32 +197,57 @@ export class Vision {
     });
     this.track(objects);
 
-    // Only report a scene once it has been the same for two frames in a row, so a
-    // one-frame false positive doesn't reach Claude. Heartbeat keeps it fresh.
-    const key = sceneKey(objects);
+    // Each kind of object is confirmed on its own: it has to be there (or gone) two frames
+    // running before the report changes. One flickering box no longer holds back news
+    // about everything else, and a one-frame false positive still never reaches Claude.
+    const stable = this.stabilise(objects);
+    const key = sceneKey(stable);
     const now = performance.now();
-    const stable = key === this.pendingKey;
-    this.pendingKey = key;
-    if ((stable && key !== this.lastKey) || now - this.lastSent > HEARTBEAT_MS) {
-      if (stable) {
-        for (const o of objects) {
-          if (!this.knownLabels.has(o.label)) this.onAppear?.(o);
-        }
-        this.knownLabels = new Set(objects.map((o) => o.label));
-        this.lastKey = key;
+    if (key !== this.lastKey || now - this.lastSent > HEARTBEAT_MS) {
+      for (const o of stable) {
+        if (!this.knownLabels.has(o.label)) this.onAppear?.(o);
       }
+      this.knownLabels = new Set(stable.map((o) => o.label));
+      this.lastKey = key;
       this.lastSent = now;
-      this.onScene?.(stable ? objects : this.lastObjects ?? []);
+      this.onScene?.(stable);
     }
-    if (stable) this.lastObjects = objects;
+  }
+
+  /** The objects to report: per label, a count that two frames in a row agree on. */
+  stabilise(objects) {
+    const byLabel = {};
+    for (const o of objects) (byLabel[o.label] ??= []).push(o);
+    const prev = this.prevCounts ?? {};
+    const held = (this.held ??= {});
+    const counts = {};
+    const out = [];
+    for (const label of new Set([...Object.keys(byLabel), ...Object.keys(prev), ...Object.keys(held)])) {
+      const nowN = byLabel[label]?.length ?? 0;
+      const before = prev[label] ?? 0;
+      if (nowN) counts[label] = nowN;
+      let n = held[label]?.length ?? 0;
+      if (nowN === before) n = nowN;
+      else if (nowN > n && before > n) n = Math.min(nowN, before);
+      else if (nowN < n && before < n) n = Math.max(nowN, before);
+      // Freshest boxes first; if this frame missed one, keep its last known place.
+      const kept = (byLabel[label] ?? []).sort((a, b) => b.score - a.score).slice(0, n);
+      for (const o of held[label] ?? []) if (kept.length < n) kept.push(o);
+      if (kept.length) held[label] = kept;
+      else delete held[label];
+      out.push(...kept);
+    }
+    this.prevCounts = counts;
+    return out;
   }
 
   /**
-   * A small JPEG of the current camera frame (base64, not mirrored), so Claude can see
-   * what the detector can't: what you're holding, text, colours, faces. Null when the
-   * camera isn't showing a picture.
+   * A JPEG of the current camera frame (base64, not mirrored), so Claude can see what the
+   * detector can't: what you're holding, text, colours, faces. Comes with a tiny greyscale
+   * fingerprint of the picture, used to tell whether the view changed between two stills.
+   * Null when the camera isn't showing a picture.
    */
-  snapshot(maxWidth = 640, quality = 0.72) {
+  snapshot(maxWidth = 960, quality = 0.8) {
     if (!this.on || this.video.readyState < 2 || !this.video.videoWidth) return null;
     const vw = this.video.videoWidth;
     const vh = this.video.videoHeight;
@@ -227,8 +255,19 @@ export class Vision {
     const c = (this.snapCanvas ??= document.createElement("canvas"));
     c.width = Math.round(vw * scale);
     c.height = Math.round(vh * scale);
-    c.getContext("2d").drawImage(this.video, 0, 0, c.width, c.height);
-    return c.toDataURL("image/jpeg", quality).split(",")[1] || null;
+    const ctx = c.getContext("2d");
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(this.video, 0, 0, c.width, c.height);
+    const jpeg = c.toDataURL("image/jpeg", quality).split(",")[1] || null;
+    if (!jpeg) return null;
+
+    const t = (this.sigCanvas ??= Object.assign(document.createElement("canvas"), { width: 16, height: 12 }));
+    const tctx = t.getContext("2d", { willReadFrequently: true });
+    tctx.drawImage(c, 0, 0, 16, 12);
+    const px = tctx.getImageData(0, 0, 16, 12).data;
+    const sig = new Uint8Array(192);
+    for (let i = 0; i < 192; i++) sig[i] = (px[i * 4] * 3 + px[i * 4 + 1] * 6 + px[i * 4 + 2]) / 10;
+    return { jpeg, sig };
   }
 
   // ---- drawing --------------------------------------------------------------------
@@ -329,4 +368,19 @@ function sceneKey(objects) {
   const counts = {};
   for (const o of objects) counts[o.label] = (counts[o.label] || 0) + 1;
   return Object.keys(counts).sort().map((k) => `${k}:${counts[k]}`).join(",");
+}
+
+/** How different two still fingerprints are: 0 (same view) to 255. Brightness shifts are ignored. */
+export function sceneChange(a, b) {
+  if (!a || !b || a.length !== b.length) return 255;
+  let ma = 0;
+  let mb = 0;
+  for (let i = 0; i < a.length; i++) {
+    ma += a[i];
+    mb += b[i];
+  }
+  const shift = (ma - mb) / a.length; // the camera's auto-exposure drifting isn't a change
+  let sum = 0;
+  for (let i = 0; i < a.length; i++) sum += Math.abs(a[i] - b[i] - shift);
+  return sum / a.length;
 }

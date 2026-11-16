@@ -1,8 +1,10 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { config } from "./config.js";
+import { nowNote } from "./clock.js";
+import type { CameraView } from "./vision.js";
 import { httpFetch } from "./net.js";
 import { SentenceChunker } from "./text.js";
-import { TtsPipeline, type TurnOutput } from "./tts.js";
+import { TtsPipeline, voiceTone, type TurnOutput } from "./tts.js";
 
 export const MOODS = ["calm", "happy", "excited", "curious", "thoughtful", "empathetic", "serious", "playful", "surprised"] as const;
 const MOOD_TAG = /^\[\s*mood\s*:\s*([a-z]+)\s*\]/i;
@@ -33,6 +35,7 @@ How to speak (sound like a warm, quick-witted person on a call, not an assistant
 Mood tag (required):
 - End every reply with exactly one mood tag in square brackets after your last sentence, like: Ooh, tell me more. [mood: curious]
 - Pick the mood that fits the emotional tone of your reply from: ${MOODS.join(", ")}.
+- Moods move slowly, the way a person's do. Keep the mood of your last reply unless what they just said really changes the feeling, and keep one even tone through the whole of a reply: don't swing from bright to grave between sentences.
 - The tag drives a visual on screen and is never spoken. Never mention it, and never put it anywhere but the very end.`;
 
 const client = config.anthropicKey ? new Anthropic({ apiKey: config.anthropicKey, maxRetries: 1, fetch: httpFetch }) : null;
@@ -56,13 +59,17 @@ const looksLikeReply = (held: string) =>
 const MAX_TOOL_STEPS = 15; // e.g. open inbox, read, open an email, read, reply, type, send
 
 export interface RunOptions {
-  /** A camera still (base64 JPEG) to show Claude with the latest user message, for this reply only. */
-  image?: string;
+  /** What the camera sees, shown to Claude with the latest user message, for this reply only. */
+  image?: CameraView;
   sceneNote?: string;
   memoryNote?: string;
   macNote?: string;
   tools?: Anthropic.Tool[];
   runTool?: (call: Anthropic.ToolUseBlock, signal: AbortSignal) => Promise<Anthropic.ToolResultBlockParam>;
+  /** True for calls that may run at the same time as the others in one step. */
+  parallel?: (call: Anthropic.ToolUseBlock) => boolean;
+  /** The model for this reply (the stronger one for tasks). Default: the fast speech model. */
+  model?: string;
   /** A few words to say before a slow lookup when the reply hasn't said anything yet ("One sec."). */
   preamble?: (call: Anthropic.ToolUseBlock) => string | undefined;
 }
@@ -160,35 +167,68 @@ export class AssistantTurn {
     ];
     const extra = [opts.memoryNote, opts.sceneNote && `What you can see:\n${opts.sceneNote}`].filter(Boolean).join("\n\n");
     if (extra) system.push({ type: "text", text: extra });
-    const messages = withHistoryCache([...history]);
+    // The newest message: what they said (cached, so the next reply only reads what's new),
+    // then the clock, then what the camera sees. The clock and the picture change every
+    // turn, so they go after the cache mark and are never stored in the history.
+    let messages = [...history];
     const last = messages[messages.length - 1];
-    if (opts.image && last?.role === "user" && typeof last.content === "string") {
-      messages[messages.length - 1] = {
-        role: "user",
-        content: [
-          { type: "image", source: { type: "base64", media_type: "image/jpeg", data: opts.image } },
-          { type: "text", text: last.content },
-        ],
-      };
+    let sentImage = false;
+    if (last?.role === "user" && typeof last.content === "string" && last.content) {
+      const content: Anthropic.ContentBlockParam[] = [
+        { type: "text", text: last.content, cache_control: { type: "ephemeral" } },
+        { type: "text", text: nowNote() },
+      ];
+      if (opts.image) {
+        const jpeg = (data: string): Anthropic.ImageBlockParam => ({ type: "image", source: { type: "base64", media_type: "image/jpeg", data } });
+        const { earlier, ageMs } = opts.image;
+        if (earlier) {
+          // The view changed while they were talking: show both, oldest first.
+          content.push({ type: "text", text: `[Camera, added by the app. First picture: what the camera saw when they started speaking, about ${Math.max(1, Math.round(earlier.ageMs / 1000))} seconds ago.]` });
+          content.push(jpeg(earlier.jpeg));
+        }
+        const when = ageMs > 2500 ? `about ${Math.round(ageMs / 1000)} seconds ago, the most recent picture there is` : "right now, as they finish speaking";
+        content.push({
+          type: "text",
+          text: earlier
+            ? `[Second picture: what the camera sees ${when}. The view changed in between, so if they were showing you something it may only be in the first picture.]`
+            : `[Camera, added by the app: what the camera sees ${when}.]`,
+        });
+        content.push(jpeg(opts.image.jpeg));
+        sentImage = true;
+      }
+      messages[messages.length - 1] = { role: "user", content };
+    } else {
+      messages = withHistoryCache(messages);
     }
+    if (opts.image && !sentImage) console.log(`[claude] turn ${this.id}: camera still not attached (the newest message isn't plain speech)`);
+    let model = opts.model && !toolModelBroken ? opts.model : config.anthropicModel;
 
     let refused = false;
     try {
       // Claude may use tools (Mac control) several times in one reply: speak, act, speak.
       for (let step = 0; step < MAX_TOOL_STEPS; step++) {
-        const stream = await hedgedStream(
-          {
-            model: config.anthropicModel,
-            max_tokens: 1024,
-            system,
-            // Fastest time-to-first-token for a voice reply.
-            thinking: { type: "disabled" },
-            ...(opts.tools?.length ? { tools: opts.tools } : {}),
-            messages,
-          },
-          this.abortCtl.signal,
-          this.id,
-        );
+        const request = (m: string): Anthropic.MessageStreamParams => ({
+          model: m,
+          max_tokens: 1024,
+          system,
+          // Fastest time-to-first-token for a voice reply. (The task model doesn't take this setting.)
+          ...(m === config.anthropicModel ? { thinking: { type: "disabled" as const } } : {}),
+          ...(opts.tools?.length ? { tools: opts.tools } : {}),
+          messages,
+        });
+        let stream: ReplyStream;
+        try {
+          stream = await hedgedStream(request(model), this.abortCtl.signal, this.id);
+        } catch (err) {
+          // The task model isn't available on this key (or rejects the request): carry on
+          // with the speech model rather than failing the reply, and stop trying it.
+          const unusable = err instanceof Anthropic.NotFoundError || err instanceof Anthropic.PermissionDeniedError || err instanceof Anthropic.BadRequestError;
+          if (model === config.anthropicModel || !unusable || this.aborted) throw err;
+          console.warn(`[claude] turn ${this.id}: ${model} can't be used (${(err as Error).message.slice(0, 160)}); using ${config.anthropicModel} from now on`);
+          toolModelBroken = true;
+          model = config.anthropicModel;
+          stream = await hedgedStream(request(model), this.abortCtl.signal, this.id);
+        }
 
         let holding = Boolean(opts.tools?.length);
         this.pending = "";
@@ -225,7 +265,7 @@ export class AssistantTurn {
         if (this.aborted) return "aborted";
         const final = await stream.finalMessage();
         const u = final.usage;
-        console.log(`[claude] turn ${this.id} step ${step}: ${u.input_tokens} new + ${u.cache_read_input_tokens ?? 0} cached + ${u.cache_creation_input_tokens ?? 0} cache-written input tokens, ${u.output_tokens} out`);
+        console.log(`[claude] turn ${this.id} step ${step} (${model}${sentImage ? ", with camera still" : ""}): ${u.input_tokens} new + ${u.cache_read_input_tokens ?? 0} cached + ${u.cache_creation_input_tokens ?? 0} cache-written input tokens, ${u.output_tokens} out`);
         const calls = final.content.filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
         if (final.stop_reason !== "tool_use" || !calls.length || !opts.runTool) {
           this.releasePending(); // a short reply with no tool call: say it
@@ -237,15 +277,32 @@ export class AssistantTurn {
         for (const sentence of this.chunker.flush()) this.enqueue(sentence);
         this.needSpace = Boolean(this.text);
         messages.push({ role: "assistant", content: final.content });
-        const results: Anthropic.ToolResultBlockParam[] = [];
-        for (const call of calls) {
-          if (this.aborted) return "aborted";
+        // Calls that can't get in each other's way (the cloud server's) all go at once;
+        // the rest (the Mac, the browser) keep their order, one after another.
+        const results: Anthropic.ToolResultBlockParam[] = new Array(calls.length);
+        const runOne = async (call: Anthropic.ToolUseBlock, i: number): Promise<void> => {
+          if (this.aborted) return;
           const t0 = performance.now();
-          const result = await opts.runTool(call, this.abortCtl.signal);
-          results.push(result);
-          this.toolNotes.push(`${call.name}${briefInput(call.input)} (${result.is_error ? "failed" : "ok"})`);
+          let result: Anthropic.ToolResultBlockParam;
+          try {
+            result = await opts.runTool!(call, this.abortCtl.signal);
+          } catch (err) {
+            result = { type: "tool_result", tool_use_id: call.id, content: `That failed: ${(err as Error)?.message ?? err}`, is_error: true };
+          }
+          results[i] = result;
           console.log(`[tool] turn ${this.id}: ${call.name} asked for at ${Math.round(t0 - this.t0)} ms, took ${Math.round(performance.now() - t0)} ms`);
-        }
+        };
+        const together = calls.map((c) => Boolean(opts.parallel?.(c)));
+        const side = Promise.all(calls.map((c, i) => (together[i] ? runOne(c, i) : null)));
+        for (let i = 0; i < calls.length; i++) if (!together[i]) await runOne(calls[i], i);
+        await side;
+        if (this.aborted) return "aborted";
+        calls.forEach((call, i) => {
+          const result = results[i];
+          // "Not done yet: needs their OK" is neither done nor failed; the note must not say "ok".
+          const waiting = typeof result.content === "string" && /^Not (done|started) yet/.test(result.content);
+          this.toolNotes.push(`${call.name}${briefInput(call.input)} (${waiting ? "not done, waiting for the user's OK" : result.is_error ? "failed" : "ok"})`);
+        });
         if (this.aborted) return "aborted";
         messages.push({ role: "user", content: results });
       }
@@ -369,6 +426,7 @@ export class AssistantTurn {
   private setMood(mood: string): void {
     if (!(MOODS as readonly string[]).includes(mood) || mood === this.mood) return;
     this.mood = mood;
+    voiceTone.mood(mood); // colours the next reply, never this one
     this.out.json({ type: "mood", turnId: this.id, mood });
   }
 
@@ -415,6 +473,23 @@ function withHistoryCache(messages: Anthropic.MessageParam[]): Anthropic.Message
   return messages;
 }
 
+/** Set when the task model turns out not to be usable with this key; the speech model does everything then. */
+let toolModelBroken = false;
+
+const TASK_WORDS =
+  /\b(add|schedule|reschedule|create|put|book|set up|remind(er|ers)?|calendar|event|events|task|tasks|to-?dos?|delete|remove|cancel|move|complete|mark|due|deadline|assignment|assignments|appointment|meeting|brightspace|homework|exam|quiz)\b/i;
+
+/**
+ * Which model answers: the fast one for conversation, the stronger one when they are
+ * asking for something to be done (calendar, tasks, deadlines) or have just been asked
+ * to confirm one. Getting a date or a calendar wrong costs more than 100 ms.
+ */
+export function pickModel(userText: string, approvalPending: boolean): string | undefined {
+  const tool = config.toolModel;
+  if (!tool || tool === "off" || tool === config.anthropicModel || toolModelBroken) return undefined;
+  return approvalPending || TASK_WORDS.test(userText) ? tool : undefined;
+}
+
 let lastModelWarm = 0;
 /**
  * Read the instructions and tool list into Claude's cache before the first real question,
@@ -442,6 +517,27 @@ export function warmModel(opts: Pick<RunOptions, "macNote" | "tools">): void {
       lastModelWarm = 0;
       console.log(`[claude] warm-up failed: ${(err as Error)?.message ?? err}`);
     });
+  // The task model keeps its own cache: read the same instructions into it too.
+  const tool = config.toolModel;
+  if (!tool || tool === "off" || tool === config.anthropicModel || toolModelBroken) return;
+  client.messages
+    .create(
+      {
+        model: tool,
+        max_tokens: 1,
+        system: [{ type: "text", text: [SYSTEM_PROMPT, opts.macNote].filter(Boolean).join("\n\n"), cache_control: { type: "ephemeral" } }],
+        ...(opts.tools?.length ? { tools: opts.tools } : {}),
+        messages: [{ role: "user", content: "Hi" }],
+      },
+      { signal: AbortSignal.timeout(20_000) },
+    )
+    .then((m) => console.log(`[claude] warmed up ${tool} in ${Math.round(performance.now() - t0)} ms (${m.usage.cache_read_input_tokens ?? 0} cached, ${m.usage.cache_creation_input_tokens ?? 0} newly cached tokens)`))
+    .catch((err) => {
+      if (err instanceof Anthropic.NotFoundError || err instanceof Anthropic.PermissionDeniedError || err instanceof Anthropic.BadRequestError) {
+        toolModelBroken = true;
+        console.warn(`[claude] ${tool} can't be used with this key (${(err as Error).message.slice(0, 160)}); ${config.anthropicModel} will handle tasks too`);
+      } else console.log(`[claude] warm-up of ${tool} failed: ${(err as Error)?.message ?? err}`);
+    });
 }
 
 /**
@@ -451,6 +547,7 @@ export function warmModel(opts: Pick<RunOptions, "macNote" | "tools">): void {
  * catches the genuinely slow ones.
  */
 const HEDGE_AFTER_MS = 900;
+const SLOW_HEDGE_AFTER_MS = 6000;
 
 interface ReplyStream extends AsyncIterable<Anthropic.MessageStreamEvent> {
   finalMessage(): Promise<Anthropic.Message>;
@@ -511,12 +608,15 @@ async function hedgedStream(params: Anthropic.MessageStreamParams, signal: Abort
   };
 
   open();
+  // The bigger model used for tasks normally takes a second or two to start, so a backup
+  // after 900 ms would double every one of its requests for nothing.
+  const after = params.model === config.anthropicModel ? HEDGE_AFTER_MS : SLOW_HEDGE_AFTER_MS;
   const hedge = setTimeout(() => {
     if (!winner && !signal.aborted && lanes.length === 1) {
-      console.log(`[claude] turn ${turnId}: no words after ${HEDGE_AFTER_MS} ms, sending a backup request`);
+      console.log(`[claude] turn ${turnId}: no words after ${after} ms, sending a backup request`);
       open();
     }
-  }, HEDGE_AFTER_MS);
+  }, after);
   const lane = await decided;
   clearTimeout(hedge);
   if (!lane) throw new Error("no reply");
