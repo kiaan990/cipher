@@ -64,14 +64,8 @@ def octagon_down(kit, mat, cx, cy, z, r, n=8):
 
 # ---------------------------------------------------------------- trees
 def tree(kit, x, y, h=7.5, r=2.4, pit=True, seed=0.0):
-    kit.cyl("Bark", x, y, 0.0, h * 0.55, 0.16, 0.11, n=6, group="Trees", collide=True)
-    for lvl, (dx, dy, dz, s) in ((1, (0, 0, 0.72, 1.0)), (0, (0.35 * math.cos(seed), 0.35 * math.sin(seed), 0.88, 0.7))):
-        v, f = ico_vf(lvl)
-        cx, cy, cz = x + dx * r, y + dy * r, h * dz
-        vv = [(cx + p[0] * r * s, cy + p[1] * r * s, cz + p[2] * r * s * 0.8) for p in v]
-        kit.b("Foliage", "Trees", False).extend(vv, f)
-    if pit:
-        kit.hquad("Soil", x - 0.75, y - 0.75, x + 0.75, y + 0.75, 0.005, group="Trees")
+    from modules import site_street
+    site_street.tree(kit, x, y, h=h, r=r, pit=pit, seed=seed)
 
 
 # ---------------------------------------------------------------- MoMA
@@ -220,7 +214,7 @@ def tower_neighbours(kit):
     # corner tower at 6th Ave
     building(kit, rect(-105.0, 0.0, -72.0, 38.0), 128.0, "Glass_Neighbor", win="Alu_Panel",
              style="glass", floor_h=3.9, ground_h=6.0, street_edges=[0, 3])
-    building(kit, rect(-105.0, 38.0, -80.0, 61.0), 64.0, "Stone_Neighbor", street_edges=[2, 3])
+    building(kit, rect(-105.0, 38.0, -80.0, 61.0), 64.0, "Limestone_Neighbor", street_edges=[2, 3])
     building(kit, rect(-72.0, 0.0, -46.0, 30.0), 82.0, "Stone_Light", floor_h=3.2, street_edges=[0])
     building(kit, rect(-46.0, 0.0, -24.0, 26.0), 46.0, "Brick_Neighbor", floor_h=3.3, street_edges=[0])
     # hotel abutting the tower: its east wall follows the tower's slanted
@@ -228,8 +222,8 @@ def tower_neighbours(kit):
     p1 = [(-24.0, 0.0), (-0.506, 0.0), (-3.506, 19.0), (-24.0, 19.0)]
     p2 = rect(-24.0, 19.0, -4.0, 30.0)
     for p, e in ((p1, [0]), (p2, [])):
-        building(kit, p, 66.0, "Stone_Neighbor", floor_h=3.25, pier_pitch=2.6, street_edges=e,
-                 detail=2 if e else 1)
+        building(kit, p, 66.0, "Limestone_Neighbor", floor_h=3.25, pier_pitch=2.6, street_edges=e,
+                 detail=2 if e else 1, setback=False, blind=(1,))   # edge 1 faces the tower
 
 
 def baccarat(kit):

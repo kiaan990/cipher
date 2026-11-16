@@ -17,6 +17,11 @@ Objects (all in collection "Exterior"):
   Ext_Glass, Ext_Mullions, Ext_Spandrels, Ext_PodiumPanels, Ext_Diagrid,
   Ext_Louvres, Ext_RoofCap, Ext_Ledge, Ext_Canopy, Ext_Spire.
 Entrance opening (no geometry): x 19.4..22.6, y = 0, z 0..3.0.
+
+ctx["diagrid_members"]: one dict per structural member (diagonals, node-level
+horizontal ties, ridge/edge members) with centre-line endpoints p0/p1 in world
+coordinates, width (in the facet plane), depth (along facet_normal), the
+outward facet_normal, plus "kind" (diagonal | tie | ridge) and "facet".
 """
 import math
 import random
@@ -35,10 +40,15 @@ GLASS_OFF = 0.02          # glass plane, outward from section boundary
 SPANDREL_OFF = 0.04
 PANEL_OFF = 0.05
 MULL_OFF = 0.10           # mullion centre (depth 0.12 -> 0.04..0.16)
-MULL_W, MULL_D = 0.08, 0.12
-DIA_OFF = 0.58            # diagrid centre (depth 0.6 -> 0.28..0.88)
-DIA_D = 0.60
-RIDGE_OFF, RIDGE_W, RIDGE_D = 0.62, 1.25, 0.90
+MULL_W, MULL_D = 0.075, 0.12
+TRANSOM_W = 0.055
+DIA_OFF = 0.27            # diagrid centre (depth 0.42 -> 0.06..0.48): near-flush
+DIA_D = 0.42              # with the glass, as in photos of the finished tower
+RIDGE_OFF, RIDGE_W, RIDGE_D = 0.32, 1.05, 0.58
+# Colours measured from photos (overcast 2021/2023 shots): graphite diagrid,
+# grey-blue reflective glass, dark-bronze/graphite mullions.
+DIAGRID_RGBA = (0.115, 0.118, 0.122, 1.0)
+GLASS_RGBA = (0.20, 0.27, 0.32, 1.0)
 LOUVRE_TOP = 309.0
 SEED = 5353
 
@@ -414,7 +424,7 @@ class Acc:
         return self.mb.finish()
 
 
-def _uv_bar(acc, g, P, Q, w, d, off, caps=True):
+def _uv_bar(acc, g, P, Q, w, d, off, caps=True, kind="diagonal"):
     du, dv = Q[0] - P[0], Q[1] - P[1]
     L = math.hypot(du, dv)
     if L < 1e-4:
@@ -424,7 +434,7 @@ def _uv_bar(acc, g, P, Q, w, d, off, caps=True):
     acc.bar(a, b, side, g.N, w, d, caps)
     if acc.members is not None:
         acc.members.append({"p0": tuple(a), "p1": tuple(b), "width": w, "depth": d,
-                            "facet_normal": tuple(g.N), "kind": "diagonal", "facet": g.name})
+                            "facet_normal": tuple(g.N), "kind": kind, "facet": g.name})
 
 
 def _uv_poly(acc, g, poly, off):
@@ -436,25 +446,27 @@ def _bands(rng):
     """Floor bands sharing one vertical-mullion pattern: (z0, z1, kind, floors)."""
     out = [(0.0, C.floor_z(2), "lobby", [1]),
            (C.floor_z(2), C.floor_z(7), "podium", [2, 3, 4, 5, 6])]
-    n = 7
-    while n <= C.NUM_FLOORS:
-        m = min(C.NUM_FLOORS + 1, n + rng.choice((2, 3, 3, 4, 5)))
-        z1 = C.roof_z() if m > C.NUM_FLOORS else C.floor_z(m)
-        out.append((C.floor_z(n), z1, "typical", list(range(n, m))))
-        n = m
+    # Tower: ONE continuous mullion rhythm per facet from floor 7 to the
+    # crown (photos show unbroken vertical lines the full height).
+    out.append((C.floor_z(7), C.roof_z() + 60.0, "typical", list(range(7, C.NUM_FLOORS + 1))))
     return out
 
 
-SPACINGS = (0.9, 1.2, 1.5, 1.5, 1.8, 1.8, 2.1, 2.4, 3.0)
+# Tall narrow panes ~1.5 m wide, with the occasional narrow (0.75-1.0 m)
+# operable pane and a few wide bays -> dense, slightly irregular rhythm.
+SPACINGS = (1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 0.75, 1.0, 1.2, 1.8)
+PODIUM_SPACINGS = (1.2, 1.5, 1.8, 1.8, 2.1, 2.4, 3.0)
 
 
 def _mullion_us(rng, umin, umax, kind):
     us = []
-    u = umin + rng.uniform(0.3, 1.5)
+    u = umin + rng.uniform(0.3, 1.2)
     while u < umax - 0.3:
         us.append(u)
         if kind == "lobby":
             u += rng.choice((2.4, 3.0, 3.0, 3.6))
+        elif kind == "podium":
+            u += rng.choice(PODIUM_SPACINGS)
         else:
             u += rng.choice(SPACINGS)
     return us
@@ -476,6 +488,8 @@ def build(ctx):
     panels = Acc("Ext_PodiumPanels", C.mat("Panel_Podium", color=(0.80, 0.78, 0.73, 1)), col)
     members = []
     dia = Acc("Ext_Diagrid", "Concrete_Diagrid", col, members)
+    _tint(C.mat("Concrete_Diagrid"), DIAGRID_RGBA, rough=0.6)
+    _tint(gm, GLASS_RGBA)
     louv = Acc("Ext_Louvres", C.mat("Louvre_Metal", color=(0.30, 0.31, 0.32, 1)), col)
 
     door_rect = (DOOR_U[0], -1.0, DOOR_U[1], DOOR_H)
@@ -486,9 +500,38 @@ def build(ctx):
         vtop = g.v_of_z(glass_top)
         umin, umax = g.urange()
 
-        # ---- glass
+        band_us = [_mullion_us(grng, umin, umax, kind) for (_, _, kind, _) in bands]
+        tower_us = band_us[-1]
+        v_tower = g.v_of_z(C.floor_z(7))
+        # ---- tower glass: one quad per pane, each with a tiny random tilt
+        # (+-0.25 deg) so reflections break up pane by pane like real IGUs
+        cuts_u = [umin - 1.0] + tower_us + [umax + 1.0]
+        rows_v = []
+        for n in range(7, C.NUM_FLOORS + 1):
+            zf = C.floor_z(n)
+            rows_v += [g.v_of_z(zf), g.v_of_z(zf + 1.75)]
+        rows_v += [g.v_of_z(roof), vtop]
+        prng = random.Random(gi * 104729 + 17)
         for pc in g.pieces:
-            pc = _clip_box(pc, v1=vtop)
+            for r in range(len(rows_v) - 1):
+                va, vb = rows_v[r], rows_v[r + 1]
+                if vb - va < 0.05:
+                    continue
+                strip = _clip_box(pc, v0=va, v1=vb)
+                if not strip:
+                    continue
+                for k in range(len(cuts_u) - 1):
+                    cell = _clip_box(strip, u0=cuts_u[k], u1=cuts_u[k + 1])
+                    if not cell:
+                        continue
+                    uc = sum(p[0] for p in cell) / len(cell)
+                    vc = sum(p[1] for p in cell) / len(cell)
+                    ta, tb = prng.uniform(-0.0045, 0.0045), prng.uniform(-0.0045, 0.0045)
+                    glass.poly([g.p3(u, v, GLASS_OFF + 0.012 + ta * (u - uc) + tb * (v - vc))
+                                for u, v in cell])
+        # ---- base glass (lobby + podium, large panes, door cut out)
+        for pc in g.pieces:
+            pc = _clip_box(pc, v1=min(vtop, v_tower))
             if not pc:
                 continue
             if g.is_south:
@@ -503,8 +546,8 @@ def build(ctx):
 
         # ---- spandrels + horizontal mullions at every floor line
         zs = [C.floor_z(n) for n in range(2, C.NUM_FLOORS + 1)] + [roof]
-        for zf in zs:
-            v0, v1 = g.v_of_z(zf - 0.45), g.v_of_z(zf + 0.15)
+        for fi, zf in enumerate(zs):
+            v0, v1 = g.v_of_z(zf - 0.40), g.v_of_z(zf + 0.12)
             for pc in g.pieces:
                 sp = _clip_box(pc, v0=v0, v1=v1)
                 if sp:
@@ -512,11 +555,17 @@ def build(ctx):
                 for vv in (v0, v1):
                     iv = _interval_v(pc, vv)
                     if iv and iv[1] - iv[0] > 0.3:
-                        _uv_bar(mull, g, (iv[0], vv), (iv[1], vv), MULL_W, MULL_D, MULL_OFF)
+                        _uv_bar(mull, g, (iv[0], vv), (iv[1], vv), MULL_W, MULL_D, MULL_OFF, caps=False)
+                # intermediate transom: two pane rows per storey (photos)
+                if zf >= C.floor_z(7) and zf < roof - 1:
+                    vt = g.v_of_z(zf + 1.75)
+                    iv = _interval_v(pc, vt)
+                    if iv and iv[1] - iv[0] > 0.3:
+                        _uv_bar(mull, g, (iv[0], vt), (iv[1], vt), TRANSOM_W, MULL_D * 0.8,
+                                MULL_OFF - 0.01, caps=False)
 
         # ---- vertical mullions (irregular rhythm, re-drawn every band)
-        for (z0, z1, kind, floors) in bands:
-            us = _mullion_us(grng, umin, umax, kind)
+        for (z0, z1, kind, floors), us in zip(bands, band_us):
             vb0, vb1 = g.v_of_z(z0), g.v_of_z(min(z1, glass_top))
             for pc in g.pieces:
                 for u in us:
@@ -531,7 +580,7 @@ def build(ctx):
                         r = (door_rect[0] - MULL_W, door_rect[1], door_rect[2] + MULL_W, door_rect[3] + 0.1)
                         segs = _seg_minus_rect(segs[0][0], segs[0][1], r)
                     for P, Q in segs:
-                        _uv_bar(mull, g, P, Q, MULL_W, MULL_D, MULL_OFF)
+                        _uv_bar(mull, g, P, Q, MULL_W, MULL_D, MULL_OFF, caps=False)
                 # podium: opaque gallery panels in a random subset of bays
                 if kind == "podium":
                     cuts = [umin - 1] + us + [umax + 1]
@@ -585,7 +634,7 @@ def build(ctx):
     # belts where a facet changes plane at z_split (the west ledge)
     for g, vsp, iv in split_belts:
         if iv:
-            _uv_bar(dia, g, (iv[0], vsp), (iv[1], vsp), 1.0, DIA_D, DIA_OFF)
+            _uv_bar(dia, g, (iv[0], vsp), (iv[1], vsp), 1.0, DIA_D, DIA_OFF, kind="tie")
 
     ctx["diagrid_members"] = members
     # ---- objects
@@ -608,39 +657,63 @@ def build(ctx):
         can.add_beam((cx + sx, -2.3, CANOPY_Z[1]), (cx + sx, -0.05, 5.6), 0.06)
     can.finish()
 
-    # slender spire tip
+    # sharp tip: a small three-sided blade cap where the ridges converge (no
+    # antenna - the real crown ends in bare, knife-edged concrete points)
     tip = V((C.SPIRE_TIP_X, C.SPIRE_TIP_Y, C.SPIRE_TIP_Z))
     sp = C.MeshBuilder("Ext_Spire", C.mat("Concrete_Diagrid"), col)
-    _cone(sp, tip - V((0, 0, 6.0)), 0.9, tip + V((0, 0, 3.0)), 0.05, 8)
+    top_r = [(p, q, n) for p, q, n in ridges if (q - tip).length < 1.0]
+    base = []
+    for p, q, n in top_r:
+        d = (q - p).normalized()
+        base.append(q - d * 4.0 + n.normalized() * (RIDGE_OFF + RIDGE_D * 0.5))
+    if len(base) >= 3:
+        apex = tip + V((0, 0, 1.6))
+        b0 = len(sp.verts)
+        sp.verts += [tuple(b) for b in base] + [tuple(apex)]
+        k = len(base)
+        cx = sum((b.x for b in base), 0.0) / k
+        cy = sum((b.y for b in base), 0.0) / k
+        order = sorted(range(k), key=lambda i: math.atan2(base[i].y - cy, base[i].x - cx))
+        for a, b in zip(order, order[1:] + order[:1]):
+            sp.faces.append((b0 + a, b0 + b, b0 + k))
+        sp.faces.append(tuple(b0 + i for i in reversed(order)))
     sp.finish()
 
 
-def _cone(mb, base, r0, top, r1, n):
-    b = len(mb.verts)
-    for k in range(n):
-        a = 2 * math.pi * k / n
-        mb.verts.append((base.x + r0 * math.cos(a), base.y + r0 * math.sin(a), base.z))
-    for k in range(n):
-        a = 2 * math.pi * k / n
-        mb.verts.append((top.x + r1 * math.cos(a), top.y + r1 * math.sin(a), top.z))
-    for k in range(n):
-        j = (k + 1) % n
-        mb.faces.append((b + k, b + j, b + n + j, b + n + k))
-    mb.faces.append(tuple(b + n + k for k in range(n)))
-    mb.faces.append(tuple(b + k for k in reversed(range(n))))
+def _tint(m, rgba, rough=None):
+    """Set the viewport + Principled base colour (materials.py may refine)."""
+    m.diffuse_color = (rgba[0], rgba[1], rgba[2], m.diffuse_color[3])
+    if m.use_nodes:
+        b = m.node_tree.nodes.get("Principled BSDF")
+        if b:
+            b.inputs["Base Color"].default_value = rgba
+            if rough is not None:
+                b.inputs["Roughness"].default_value = rough
 
 
 def _row_levels(rng):
-    """Node elevations for one facet: every 3-6 storeys, irregular."""
+    """Node elevations for one facet: irregular, denser toward the base
+    (every 2-4 storeys in the podium, 4-8 storeys in the shaft)."""
     zs = [0.0]
-    n = 1 + rng.choice((0, 1, 2))
+    n = 1 + rng.choice((0, 1))
     while True:
-        n += rng.choice((3, 4, 4, 5, 5, 6))
+        if n < 10:
+            n += rng.choice((2, 3, 3, 4))
+        elif n < 40:
+            n += rng.choice((4, 5, 5, 6, 7))
+        else:
+            n += rng.choice((5, 6, 7, 8))
         z = _ext_floor_z(n)
         if z > C.SPIRE_TIP_Z:
             break
         zs.append(z)
     return zs
+
+
+def _member_w(z, rng):
+    """Diagonal width: ~1.5 m at grade tapering to ~0.75 m at the crown."""
+    t = min(1.0, max(0.0, z / 300.0))
+    return rng.uniform(0.92, 1.08) * (1.55 - 0.8 * t)
 
 
 def _diagrid(acc, g, rng, door_rect):
@@ -662,7 +735,8 @@ def _diagrid(acc, g, rng, door_rect):
             if W < 1.0:
                 rows.append([((ua + ub) / 2, v, 0.5)])
                 continue
-            spacing = rng.uniform(8.5, 12.5)
+            zr = g.z_of_v(v)
+            spacing = rng.uniform(9.0, 12.0) if zr < 40 else rng.uniform(12.0, 17.0)
             N = max(1, int(round(W / spacing)))
             s = 0.5 if (r % 2) else 0.0
             ts = [0.0, 1.0]
@@ -685,9 +759,22 @@ def _diagrid(acc, g, rng, door_rect):
                     r = (door_rect[0] - 1.6, -1.0, door_rect[2] + 1.6, CANOPY_Z[1] + 1.2)
                     segs = _seg_minus_rect(P, Q, r)
                 zmid = g.z_of_v((P[1] + Q[1]) / 2)
-                w = rng.uniform(0.85, 1.15) * (1.3 - 0.45 * min(1.0, zmid / 300.0))
+                w = _member_w(zmid, rng)
                 for a, b in segs:
                     _uv_bar(acc, g, a, b, w, DIA_D, DIA_OFF)
+        # horizontal ties at some node levels (visible in photos as flat
+        # bands linking the diagonal nodes), never at grade
+        for r, nodes in enumerate(rows[1:-1], start=1):
+            if len(nodes) < 2 or rng.random() > 0.45:
+                continue
+            P, Q = nodes[0], nodes[-1]
+            z = g.z_of_v(P[1])
+            segs = [((P[0], P[1]), (Q[0], Q[1]))]
+            if g.is_south:
+                segs = _seg_minus_rect(segs[0][0], segs[0][1],
+                                       (door_rect[0] - 1.6, -1.0, door_rect[2] + 1.6, CANOPY_Z[1] + 1.2))
+            for a, b in segs:
+                _uv_bar(acc, g, a, b, 0.75 * _member_w(z, rng), DIA_D * 0.9, DIA_OFF, kind="tie")
 
 
 def _zipper(lo, up):

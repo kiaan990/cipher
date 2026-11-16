@@ -26,6 +26,42 @@ COLORS = {
     "Glass_Blue":       (0.22, 0.32, 0.40, 1),
     "Glass_Green":      (0.24, 0.34, 0.32, 1),
     "Taxi_Yellow":      (0.95, 0.70, 0.05, 1),
+    "Car_Paint_Yellow": (0.93, 0.66, 0.04, 1),
+    "Car_Paint_Black":  (0.02, 0.02, 0.025, 1),
+    "Car_Paint_Silver": (0.55, 0.56, 0.58, 1),
+    "Car_Paint_White":  (0.85, 0.86, 0.87, 1),
+    "Car_Paint_Blue":   (0.06, 0.12, 0.25, 1),
+    "Car_Paint_Red":    (0.45, 0.04, 0.04, 1),
+    "Bus_White":        (0.86, 0.87, 0.88, 1),
+    "Bus_Blue":         (0.05, 0.22, 0.55, 1),
+    "Car_Chrome":       (0.70, 0.70, 0.72, 1),
+    "Car_Lights_Rear":  (0.55, 0.02, 0.02, 1),
+    "Car_Lights_Front": (0.90, 0.90, 0.85, 1),
+    "Wheel_Rim":        (0.45, 0.46, 0.48, 1),
+    "Leaves":           (0.13, 0.27, 0.08, 1),
+    "Window_Glass":     (0.11, 0.14, 0.16, 1),
+    "Window_Frame":     (0.80, 0.79, 0.75, 1),
+    "Window_Frame_Dark": (0.12, 0.11, 0.10, 1),
+    "Mullion_Storefront": (0.10, 0.10, 0.11, 1),
+    "Mullion_Neighbor": (0.40, 0.42, 0.44, 1),
+    "Limestone_Neighbor": (0.70, 0.66, 0.58, 1),
+    "Granite_CBS":      (0.09, 0.09, 0.095, 1),
+    "Awning_Green":     (0.08, 0.20, 0.14, 1),
+    "Awning_Black":     (0.04, 0.04, 0.045, 1),
+    "Awning_Burgundy":  (0.30, 0.05, 0.07, 1),
+    "Wood_Tank":        (0.30, 0.22, 0.15, 1),
+    "Road_Green_Sign":  (0.05, 0.30, 0.15, 1),
+    "Signal_Yellow":    (0.80, 0.62, 0.08, 1),
+    "Signal_Black":     (0.03, 0.03, 0.03, 1),
+    "Signal_Lens_Red":  (0.80, 0.05, 0.03, 1),
+    "Signal_Lens_Green": (0.05, 0.75, 0.45, 1),
+    "Manhole_Iron":     (0.10, 0.09, 0.085, 1),
+    "Sidewalk_Joint":   (0.30, 0.30, 0.29, 1),
+    "Tactile_Yellow":   (0.78, 0.60, 0.10, 1),
+    "Ground_Distant":   (0.30, 0.30, 0.31, 1),
+    "Grass_Park":       (0.16, 0.26, 0.10, 1),
+    "Water_Distant":    (0.12, 0.18, 0.22, 1),
+    "Concrete_Distant": (0.52, 0.51, 0.49, 1),
     "Tire_Black":       (0.03, 0.03, 0.03, 1),
     "Car_Glass":        (0.10, 0.13, 0.16, 1),
     "Lamp_Grey":        (0.30, 0.32, 0.33, 1),
@@ -69,14 +105,15 @@ class Kit:
         return objs
 
     # ------------------------------------------------------------ primitives
-    def prism(self, mat, poly, z0, z1, group="Bldg", collide=True, bottom=False):
+    def prism(self, mat, poly, z0, z1, group="Bldg", collide=True, bottom=False, top=True):
         mb = self.b(mat, group, collide)
         b = len(mb.verts)
         n = len(poly)
         mb.verts += [(x, y, z0) for x, y in poly] + [(x, y, z1) for x, y in poly]
         if bottom:
             mb.faces.append(tuple(b + i for i in reversed(range(n))))
-        mb.faces.append(tuple(b + n + i for i in range(n)))
+        if top:
+            mb.faces.append(tuple(b + n + i for i in range(n)))
         for i in range(n):
             j = (i + 1) % n
             mb.faces.append((b + i, b + j, b + n + j, b + n + i))
@@ -245,37 +282,10 @@ def facade_piers(kit, poly, z0, z1, mat, off, pitch, width, edges=None):
             kit.quad(mat, (pa[0], pa[1], z0), (pb[0], pb[1], z0), (pb[0], pb[1], z1), (pa[0], pa[1], z1))
 
 
-def building(kit, poly, h, wall, win="Window_Dark", floor_h=3.4, ground_h=4.6,
-             detail=2, pier_pitch=3.2, pier_w=0.9, store=True, street_edges=None,
-             roof="Roof_Grey", style="punched"):
-    """Generic neighbour: solid massing + facade banding.
-
-    detail 0: plain prism. 1: window bands. 2: bands + piers (punched grid).
-    style "glass": body glass, spandrel bands in `win`.
-    """
-    kit.prism(wall, poly, 0.0, h)
-    if h > 40 and detail >= 1:
-        # rooftop mechanical bulkhead
-        cx, cy = C.centroid(poly)
-        s = min(6.0, 0.15 * math.sqrt(abs(_area(poly))))
-        kit.box(roof, cx - s, cy - s * 0.7, h, cx + s, cy + s * 0.7, h + 4.0)
-    if detail <= 0:
-        return
-    top = h - 1.2
-    if style == "glass":
-        facade_bands(kit, poly, ground_h, top, win, 0.03, floor_h - 0.9, floor_h, floor_h)
-        if detail >= 2:
-            facade_piers(kit, poly, ground_h, top, win, 0.05, pier_pitch * 0.5, 0.12)
-    else:
-        facade_bands(kit, poly, ground_h, top, win, 0.03, 0.9, floor_h - 0.6, floor_h)
-        if detail >= 2:
-            facade_piers(kit, poly, ground_h, top, wall, 0.06, pier_pitch, pier_w)
-    if store:
-        facade_bands(kit, poly, 0.0, ground_h, "Storefront", 0.03, 0.25, ground_h - 0.9,
-                     ground_h, edges=street_edges)
-    # cornice line
-    if detail >= 2 and style != "glass":
-        facade_bands(kit, poly, h - 1.0, h, wall, 0.25, 0.0, 0.6, 10.0)
+def building(kit, poly, h, wall, win="Window_Dark", **kw):
+    """Generic neighbour with real relief facades (see site_facades)."""
+    from modules import site_facades
+    site_facades.building(kit, poly, h, wall, win, **kw)
 
 
 def _area(poly):

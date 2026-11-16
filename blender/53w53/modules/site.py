@@ -16,6 +16,10 @@ import bpy
 import config as C
 from modules import site_kit as K
 from modules import site_buildings as SB
+from modules import site_street as ST
+from modules import site_city as CITY
+
+FILLED = set()      # block keys (x0, y0) built here (site_city skips them)
 
 ROAD_Z = -0.15
 SIDEWALK = 6.0
@@ -222,7 +226,7 @@ def markings(kit):
 
 
 # ======================================================================= blocks
-NEIGH_MATS = [("Brick_Neighbor", 3), ("Stone_Neighbor", 3), ("Stone_Light", 2), ("Brick_Light", 2)]
+NEIGH_MATS = [("Brick_Neighbor", 3), ("Limestone_Neighbor", 3), ("Stone_Light", 2), ("Brick_Light", 2)]
 GLASS_MATS = ["Glass_Neighbor", "Glass_Blue", "Glass_Green"]
 
 
@@ -243,9 +247,7 @@ def _lod(x, y):
 
 def lot_building(kit, rng, poly, h, street_edges, tall_glass=0.6):
     cx, cy = C.centroid(poly)
-    if _dist(cx, cy) > RADIUS:
-        return
-    det = _lod(cx, cy)
+    det = _lod(cx, cy) if _dist(cx, cy) <= RADIUS else 0
     if h > 85 and rng.random() < tall_glass:
         m = rng.choice(GLASS_MATS)
         win = rng.choice(["Window_Dark", "Alu_Panel", "Granite_Black"])
@@ -258,7 +260,8 @@ def lot_building(kit, rng, poly, h, street_edges, tall_glass=0.6):
                    street_edges=street_edges)
 
 
-def fill_row(kit, rng, xa, xb, yf, facing, dmin, dmax, hmin, hmax, tall_p=0.1, wmin=8.0, wmax=28.0):
+def fill_row(kit, rng, xa, xb, yf, facing, dmin, dmax, hmin, hmax, tall_p=0.1, wmin=8.0, wmax=28.0,
+             open_w=False, open_e=False):
     """Row of lots along an E-W street between xa and xb. facing 'S' puts the
     street on the south side of the lots (front line y=yf)."""
     x = xa
@@ -274,6 +277,10 @@ def fill_row(kit, rng, xa, xb, yf, facing, dmin, dmax, hmin, hmax, tall_p=0.1, w
             poly, e = K.rect(x, yf, x + w, yf + d), [0]
         else:
             poly, e = K.rect(x, yf - d, x + w, yf), [2]
+        if open_w and x == xa:
+            e.append(3)            # side facing an open plaza / gap
+        if open_e and x + w >= xb - 1e-6:
+            e.append(1)
         lot_building(kit, rng, poly, h, e)
         x += w
 
@@ -302,6 +309,7 @@ def fill_block(kit, bx0, by0, bx1, by1, skip=()):
     cx, cy = (bx0 + bx1) / 2, (by0 + by1) / 2
     if _dist(cx, cy) > RADIUS + 60:
         return
+    FILLED.add((round(bx0), round(by0)))
     ew = rng.uniform(26.0, 40.0)
     ee = rng.uniform(26.0, 40.0)
     if bx1 - bx0 < 140:
@@ -338,15 +346,17 @@ def main_blocks(kit):
     SB.tower_neighbours(kit)
     SB.moma(kit)
     SB.st_thomas(kit)
-    K.building(kit, K.rect(135.0, 33.0, 175.0, 61.0), 42.0, "Stone_Neighbor", floor_h=4.6,
+    K.building(kit, K.rect(135.0, 33.0, 175.0, 61.0), 42.0, "Limestone_Neighbor", floor_h=4.6,
                ground_h=6.0, pier_pitch=3.4, pier_w=1.4, street_edges=[1, 2])      # University Club
     # 54th St brownstones / mid-rise behind the tower
     fill_row(kit, rng, -80.0, 46.5, 61.0, "N", 15.0, 19.0, 13.0, 24.0, tall_p=0.12, wmin=6.0, wmax=14.0)
     # --- south side of 53rd St
     SB.cbs(kit)
     # pocket plaza opposite the tower (keeps the view up to the spire open)
-    fill_row(kit, rng, -55.0, -48.0, -22.0, "N", 20.0, 28.0, 22.0, 60.0, tall_p=0.0, wmin=7.0, wmax=7.0)
-    fill_row(kit, rng, -6.0, 70.0, -22.0, "N", 20.0, 28.0, 22.0, 75.0, tall_p=0.2, wmin=10.0, wmax=24.0)
+    fill_row(kit, rng, -55.0, -48.0, -22.0, "N", 20.0, 28.0, 22.0, 60.0, tall_p=0.0, wmin=7.0, wmax=7.0,
+             open_e=True)
+    fill_row(kit, rng, -6.0, 70.0, -22.0, "N", 20.0, 28.0, 22.0, 75.0, tall_p=0.2, wmin=10.0, wmax=24.0,
+             open_w=True)
     K.building(kit, K.rect(-48.0, -83.0, -6.0, -58.0), 112.0, "Glass_Green", win="Alu_Panel",
                style="glass", floor_h=4.0, ground_h=7.0, street_edges=[0, 2])
     for x, y in ((-42.0, -30.0), (-30.0, -36.0), (-17.0, -29.0), (-12.0, -44.0), (-46.0, -52.0)):
@@ -364,13 +374,7 @@ def main_blocks(kit):
 
 # ======================================================================= furniture
 def street_lamp(kit, x, y, facing):
-    """NYC-style octagonal pole with a davit arm reaching over the roadway."""
-    kit.cyl("Lamp_Grey", x, y, 0.0, 0.9, 0.2, 0.17, n=8)
-    kit.cyl("Lamp_Grey", x, y, 0.9, 8.6, 0.12, 0.08, n=8)
-    ex, ey = x + facing[0] * 2.4, y + facing[1] * 2.4
-    kit.beam("Lamp_Grey", (x, y, 8.4), (ex, ey, 8.75), 0.09, collide=False)
-    kit.box("Lamp_Grey", ex - 0.4, ey - 0.4, 8.6, ex + 0.4, ey + 0.4, 8.9, group="Furn", collide=False)
-    kit.hquad("Light_Emit", ex - 0.32, ey + 0.32, ex + 0.32, ey - 0.32, 8.59, group="Furn")
+    ST.street_lamp(kit, x, y, facing)
 
 
 def bollard(kit, x, y):
@@ -384,21 +388,8 @@ def hydrant(kit, x, y):
     kit.beam("Hydrant_Red", (x, y - 0.24, 0.42), (x, y, 0.42), 0.11)
 
 
-def taxi(kit, x, y, rot):
-    """Low-poly yellow cab, ~4.9 m long, length along local +x."""
-    body = K.box_vf(-2.45, -0.9, 0.32, 2.45, 0.9, 1.0)
-    hood = K.xz_prism_vf([(-2.45, 1.0), (2.45, 1.0), (2.2, 1.06), (-2.3, 1.06)], -0.88, 0.88)
-    roof = K.box_vf(-1.05, -0.76, 1.5, 0.45, 0.76, 1.56)
-    kit.part("Taxi_Yellow", *K.merge_vf(body, hood, roof), (x, y, ROAD_Z), rot)
-    cabin = K.xz_prism_vf([(-1.4, 1.0), (1.0, 1.0), (0.45, 1.5), (-1.05, 1.5)], -0.8, 0.8)
-    kit.part("Car_Glass", *cabin, (x, y, ROAD_Z), rot)
-    sign = K.box_vf(-0.4, -0.3, 1.56, 0.1, 0.3, 1.82)
-    kit.part("Road_Marking", *sign, (x, y, ROAD_Z), rot)
-    wheels = K.merge_vf(*[K.wheel_vf(wx, sy, sy + 0.24 * sgn, 0.34, 0.34)
-                          for wx in (-1.55, 1.5) for sy, sgn in ((-0.92, 1), (0.92, -1))])
-    v, f = wheels
-    # wheels were built with y0 > y1 on one side; normals don't matter for tires
-    kit.part("Tire_Black", v, f, (x, y, ROAD_Z), rot)
+def taxi(kit, x, y, rot, kind="taxi", paint=None):
+    ST.vehicle(kit, kind, x, y, rot, paint)
 
 
 def kiosk(kit, x0, y0, x1, y1):
@@ -425,15 +416,15 @@ def furniture(kit):
     k = 0
     while x < 172.0:
         if ok(x, lamps_n, [entrance_clear, moma_entry, (4.0, 10.0), (138.0, 176.0)]):
-            SB.tree(kit, x, north_y, h=6.6 + (k % 3) * 0.5, r=1.8, seed=k)
+            ST.tree(kit, x, north_y, h=7.4 + (k % 3) * 0.6, r=2.3, seed=k, guard=True)
         if ok(x, lamps_s, [(-100.0, -52.0), (56.0, 62.0)]):
-            SB.tree(kit, x, south_y, h=7.0 - (k % 2) * 0.6, r=1.9, seed=k + 3)
+            ST.tree(kit, x, south_y, h=7.8 - (k % 2) * 0.7, r=2.4, seed=k + 3, guard=True)
         x += 9.5
         k += 1
     # trees on the far sides of 54th / 52nd St and along the avenues (sparser)
     for x in range(-90, 170, 13):
-        SB.tree(kit, x + 0.5, 65.9, h=6.5, r=2.0, seed=x)
-        SB.tree(kit, x + 4.0, -87.9, h=6.5, r=2.0, seed=x + 1)
+        ST.tree(kit, x + 0.5, 65.9, h=7.0, r=2.2, seed=x, lod=1)
+        ST.tree(kit, x + 4.0, -87.9, h=7.0, r=2.2, seed=x + 1, lod=1)
     # bollards at the MoMA entrance and Goodwin-Stone marquee
     bx = moma_entry[0] + 1.0
     while bx <= moma_entry[1] - 1.0:
@@ -445,15 +436,66 @@ def furniture(kit):
     hydrant(kit, 58.0, -16.65)
     hydrant(kit, -100.0, -5.4)
     kiosk(kit, -110.4, 7.0, -108.8, 10.5)     # newsstand, 6th Ave NE of 53rd
-    # yellow cabs
-    taxi(kit, 30.0, -14.6, 0.0)               # parked, south curb
-    taxi(kit, 70.0, -10.3, 0.0)
-    taxi(kit, 140.0, -8.3, 0.0)
-    taxi(kit, -42.0, -12.0, 0.0)
-    taxi(kit, -119.0, -48.0, math.pi / 2)     # 6th Ave northbound
-    taxi(kit, -115.0, 25.0, math.pi / 2)
-    taxi(kit, 191.0, 30.0, -math.pi / 2)      # 5th Ave southbound
-    taxi(kit, 186.0, -60.0, -math.pi / 2)
+    vehicles(kit)
+    street_details(kit)
+
+
+def vehicles(kit):
+    """W 53rd St is one-way EASTBOUND (+x); 6th Ave runs north (+y), 5th Ave
+    south (-y).  Parking lane along the south curb, travel lanes north of it."""
+    E, N, S = 0.0, math.pi / 2, -math.pi / 2
+    # parked along the south curb (y ~ -14.9), avoiding hydrant / crosswalks
+    parked = [(-88.0, "suv", "Car_Paint_Black"), (-82.0, "sedan", "Car_Paint_Silver"),
+              (-68.0, "sedan", "Car_Paint_White"), (-30.0, "suv", "Car_Paint_Blue"),
+              (-23.5, "sedan", "Car_Paint_Black"), (36.0, "suv", "Car_Paint_Black"),
+              (42.5, "suv", "Car_Paint_Black"), (76.0, "sedan", "Car_Paint_Red"),
+              (82.5, "sedan", "Car_Paint_Silver"), (124.0, "suv", "Car_Paint_White"),
+              (150.0, "van", None)]
+    for x, kind, paint in parked:
+        taxi(kit, x, -14.85, E, kind, paint)
+    # moving traffic, eastbound
+    taxi(kit, -48.0, -11.9, E, "taxi")
+    taxi(kit, 8.0, -9.1, E, "taxi")                 # passing the tower entrance
+    taxi(kit, 15.0, -11.9, E, "sedan", "Car_Paint_Black")
+    taxi(kit, 62.0, -9.1, E, "van")
+    taxi(kit, 104.0, -11.9, E, "taxi")
+    taxi(kit, 158.0, -9.1, E, "suv", "Car_Paint_Silver")
+    # black livery car waiting at the tower canopy (north curb, y ~ -7)
+    taxi(kit, 26.5, -7.05, E, "suv", "Car_Paint_Black")
+    # 6th Ave northbound, 5th Ave southbound (buses in the curb lane)
+    taxi(kit, -125.5, -40.0, N, "bus")
+    taxi(kit, -119.0, -52.0, N, "taxi")
+    taxi(kit, -115.0, 22.0, N, "taxi")
+    taxi(kit, -122.0, 40.0, N, "sedan", "Car_Paint_Silver")
+    taxi(kit, -115.0, -95.0, N, "van")
+    taxi(kit, 184.5, 40.0, S, "bus")
+    taxi(kit, 191.0, 18.0, S, "taxi")
+    taxi(kit, 195.0, -55.0, S, "suv", "Car_Paint_Black")
+    taxi(kit, 188.0, -70.0, S, "taxi")
+
+
+def street_details(kit):
+    # traffic signals at the four corners of 53rd St & 6th / 5th Ave
+    for ax0, ax1 in ((-135.0, -105.0), (175.0, 205.0)):
+        cw, ce = ax0 + 6.0, ax1 - 6.0          # avenue curbs
+        # NE + SW corners: mast arms over the avenue; NW + SE: over 53rd St
+        ST.traffic_signal(kit, ce + 0.5, -5.5, (-1.0, 0.0), arm_len=8.0)
+        ST.traffic_signal(kit, cw - 0.5, -16.5, (1.0, 0.0), arm_len=8.0)
+        ST.traffic_signal(kit, cw - 0.5, -5.5, (0.0, -1.0), arm_len=6.0)
+        ST.traffic_signal(kit, ce + 0.5, -16.5, (0.0, 1.0), arm_len=6.0)
+        # curb ramps at the 53rd St crosswalks (both sides)
+        for x in (ax0 - 3.0, ax1 + 3.0):
+            ST.curb_ramp_ns(kit, x, -6.0, 1)
+            ST.curb_ramp_ns(kit, x, -16.0, -1)
+    # manholes / utility covers on 53rd St and the avenues
+    for x in (-95.0, -61.0, -27.0, 4.0, 33.0, 71.0, 109.0, 147.0):
+        ST.manhole(kit, x, -11.0 + (1.6 if int(x) % 2 else -0.8))
+    for y in (-60.0, -35.0, 20.0, 45.0):
+        ST.manhole(kit, -120.0, y)
+        ST.manhole(kit, 190.0, y)
+    # scored sidewalk joints along 53rd St (both sides) - the hero frontage
+    ST.sidewalk_joints(kit, -104.0, 174.0, 0.0, -6.0)
+    ST.sidewalk_joints(kit, -104.0, 174.0, -22.0, -16.0)
 
 
 # ======================================================================= world
@@ -475,6 +517,7 @@ def world(scene):
 
 
 def build(ctx):
+    FILLED.clear()
     col = C.collection("Site")
     kit = K.Kit(col)
     ground(kit)
@@ -482,6 +525,10 @@ def build(ctx):
     main_blocks(kit)
     context_blocks(kit)
     furniture(kit)
+    for blk in (TOWER_BLOCK, SOUTH_BLOCK):
+        FILLED.add((round(blk[0]), round(blk[1])))
+    slabbed = {(round(cx0), round(ry0)) for (cx0, cx1) in COLS for (ry0, ry1) in ROWS}
+    CITY.build(kit, CENTER, filled=FILLED, slabbed=slabbed)
     objs = kit.finish()
     world(bpy.context.scene)
     tris = sum(sum(len(p.vertices) - 2 for p in o.data.polygons) for o in objs)
