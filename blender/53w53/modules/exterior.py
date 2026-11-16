@@ -388,8 +388,9 @@ def _poly3_area(poly):
 class Acc:
     """Light wrapper around MeshBuilder with oriented bars and polygons."""
 
-    def __init__(self, name, material, col):
+    def __init__(self, name, material, col, members=None):
         self.mb = C.MeshBuilder(name, C.mat(material) if isinstance(material, str) else material, col)
+        self.members = members   # optional list: records centre-line members
 
     def poly(self, pts):
         b = len(self.mb.verts)
@@ -419,7 +420,11 @@ def _uv_bar(acc, g, P, Q, w, d, off, caps=True):
     if L < 1e-4:
         return
     side = (g.h * (-dv / L) + g.w * (du / L)).normalized()
-    acc.bar(g.p3(P[0], P[1], off), g.p3(Q[0], Q[1], off), side, g.N, w, d, caps)
+    a, b = g.p3(P[0], P[1], off), g.p3(Q[0], Q[1], off)
+    acc.bar(a, b, side, g.N, w, d, caps)
+    if acc.members is not None:
+        acc.members.append({"p0": tuple(a), "p1": tuple(b), "width": w, "depth": d,
+                            "facet_normal": tuple(g.N), "kind": "diagonal", "facet": g.name})
 
 
 def _uv_poly(acc, g, poly, off):
@@ -469,7 +474,8 @@ def build(ctx):
     mull = Acc("Ext_Mullions", "Mullion_Alu", col)
     spand = Acc("Ext_Spandrels", C.mat("Spandrel_Dark", color=(0.10, 0.11, 0.12, 1)), col)
     panels = Acc("Ext_PodiumPanels", C.mat("Panel_Podium", color=(0.80, 0.78, 0.73, 1)), col)
-    dia = Acc("Ext_Diagrid", "Concrete_Diagrid", col)
+    members = []
+    dia = Acc("Ext_Diagrid", "Concrete_Diagrid", col, members)
     louv = Acc("Ext_Louvres", C.mat("Louvre_Metal", color=(0.30, 0.31, 0.32, 1)), col)
 
     door_rect = (DOOR_U[0], -1.0, DOOR_U[1], DOOR_H)
@@ -573,12 +579,15 @@ def build(ctx):
             a = p.copy()
         acc_off = dn * RIDGE_OFF
         dia.bar(a + acc_off, b + acc_off, side, dn, RIDGE_W, RIDGE_D)
+        members.append({"p0": tuple(a + acc_off), "p1": tuple(b + acc_off), "width": RIDGE_W,
+                        "depth": RIDGE_D, "facet_normal": tuple(dn), "kind": "ridge", "facet": "ridge"})
 
     # belts where a facet changes plane at z_split (the west ledge)
     for g, vsp, iv in split_belts:
         if iv:
             _uv_bar(dia, g, (iv[0], vsp), (iv[1], vsp), 1.0, DIA_D, DIA_OFF)
 
+    ctx["diagrid_members"] = members
     # ---- objects
     for acc in (glass, mull, spand, panels, dia, louv):
         acc.finish()
