@@ -46,7 +46,7 @@
   #minimap { display: block; width: 190px; height: 150px; }
   #hint { position: fixed; left: 16px; bottom: 16px; padding: 10px 14px; color: var(--muted); font-size: 12.5px; max-width: 560px; }
   #hint span { white-space: nowrap; margin-right: 10px; }
-  #prompt { position: fixed; left: 50%; bottom: 72px; transform: translateX(-50%); padding: 8px 14px; pointer-events: none; }
+  #prompt { position: fixed; left: 50%; bottom: 120px; transform: translateX(-50%); padding: 8px 14px; pointer-events: none; }
   #crosshair { position: fixed; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px 0 0 -3px; border-radius: 50%;
     background: rgba(255,255,255,0.7); box-shadow: 0 0 0 1px rgba(0,0,0,.35); pointer-events: none; }
   #orbitbar { position: fixed; right: 16px; bottom: 16px; display: flex; gap: 8px; }
@@ -212,6 +212,8 @@ let W = null;                       // walkdata.json
 let base = './';                    // folder holding the glb + json
 const byFloor = new Map();          // floor -> collidable meshes
 const siteMeshes = [];              // collidable site meshes (floor 0)
+const visByFloor = new Map();       // floor -> interior meshes (for visibility culling)
+let visKey = '';
 const octrees = new Map();          // cache: floor -> Octree (floor ±1 + site)
 let octree = null, octreeFloor = -1;
 const player = new Capsule(new THREE.Vector3(0, RADIUS, 0), new THREE.Vector3(0, EYE - RADIUS, 0), RADIUS);
@@ -298,6 +300,10 @@ function addModel(root) {
     const noNormals = !o.geometry.getAttribute('normal');
     const mats = Array.isArray(o.material) ? o.material : [o.material];
     for (const m of mats) fixMaterial(m, noNormals);
+    if (o.userData.group === 'Interiors' && o.userData.floor >= 1) {
+      if (!visByFloor.has(o.userData.floor)) visByFloor.set(o.userData.floor, []);
+      visByFloor.get(o.userData.floor).push(o);
+    }
     if (o.userData.collide) {
       if (o.userData.group === 'Site' || o.userData.floor === 0) siteMeshes.push(o);
       else if (o.userData.floor >= 1) {
@@ -499,22 +505,28 @@ function pause() {
 }
 
 function setHud(on, orbitMode = false) {
-  for (const id of ['hud', 'mapwrap']) $(id).classList.toggle('hidden', !on);
+  $('hud').classList.toggle('hidden', !on);
+  $('mapwrap').classList.toggle('hidden', !on || orbitMode);
+  $('prompt').classList.add('hidden'); toastTimer = 0;
   $('hint').classList.toggle('hidden', !on || !showHelp || orbitMode);
   $('crosshair').classList.toggle('hidden', !on || orbitMode);
   $('orbitbar').classList.toggle('hidden', !orbitMode || isTouchOnly);
 }
 
+let started = false;
 function startWalk() {
+  started = true;
   if (orbit) { orbit.enabled = false; }
   mode = 'walk';
   $('overlay').classList.add('hidden');
   setHud(true);
+  $('hud-mode').textContent = flying ? 'Fly' : 'Walk';
   camera.rotation.order = 'YXZ';
   lockPointer();
 }
 
 function startOrbit() {
+  started = true;
   mode = 'orbit';
   if (document.pointerLockElement) document.exitPointerLock();
   $('overlay').classList.add('hidden');
@@ -606,8 +618,38 @@ function teleportToFloor(n) {
   const f = F(n);
   flying = false; $('hud-mode').textContent = 'Walk';
   setFeet(f.lift[0], f.lift[1], f.z + 0.02);
-  yaw = 0; pitch = 0;                      // face north, away from the lift doors
   useFloorOctree(n);
+  yaw = openestYaw(); pitch = 0;           // face the most open direction (lift doors are behind / south)
+}
+function openestYaw() {
+  const eye = new THREE.Vector3(player.end.x, player.end.y + RADIUS, player.end.z);
+  let best = 0, bestD = -1;
+  for (let i = 0; i < 16; i++) {
+    const a = (i / 16) * Math.PI * 2;
+    const dir = new THREE.Vector3(-Math.sin(a), 0, -Math.cos(a));
+    const hit = octree.rayIntersect(new THREE.Ray(eye, dir));
+    let d = hit ? hit.distance : 60;
+    if (Math.abs(Math.sin(a / 2)) > 0.92) d *= 0.6;   // prefer not to face back into the lift (south)
+    if (d > bestD + 0.5) { bestD = d; best = a; }
+  }
+  return best;
+}
+
+// Interiors are hidden behind the facade except near the viewer: indoors show
+// floors n-2..n+2, on the street the podium, in fly / orbit mode everything.
+function updateVisibility() {
+  let lo = 1, hi = 999;
+  if (mode === 'walk' && !flying) {
+    if (outdoors) { lo = 1; hi = 12; }
+    else { lo = currentFloor - 2; hi = currentFloor + 2; }
+  }
+  const key = lo + ':' + hi + ':' + visByFloor.size;
+  if (key === visKey) return;
+  visKey = key;
+  for (const [n, list] of visByFloor) {
+    const v = n >= lo && n <= hi;
+    for (const m of list) m.visible = v;
+  }
 }
 
 // ---------------------------------------------------------------- update
@@ -760,18 +802,23 @@ addEventListener('resize', () => {
 });
 
 const clock = new THREE.Clock();
-renderer.setAnimationLoop(() => {
-  const dt = Math.min(0.05, clock.getDelta());
+function frame(dt) {
   if (W && octree) {
     update(dt);
-    if (mode !== 'orbit') {
+    if (mode === 'menu' && !started) {        // title backdrop: look up the tower from across 53rd St
+      camera.position.copy(toThree(-14, -20, 1.7));
+      camera.lookAt(toThree(22, 12, 125));
+    } else if (mode !== 'orbit') {
       camera.position.set(player.end.x, player.end.y + RADIUS, player.end.z);
       camera.rotation.set(pitch, yaw, 0, 'YXZ');
     }
     updateHud(dt);
+    updateVisibility();
   }
   renderer.render(scene, camera);
-});
+}
+const loop = () => frame(Math.min(0.05, clock.getDelta()));
+renderer.setAnimationLoop(loop);
 
 // Small hook for automated tests / the console.
 window.walk53 = {
@@ -783,6 +830,9 @@ window.walk53 = {
   setFeet: (x, y, z) => { setFeet(x, y, z); useFloorOctree(floorAtZ(z)); },
   press: (code, on = true) => on ? keys.add(code) : keys.delete(code),
   three: { THREE, scene, camera, renderer },
+  stopLoop: () => renderer.setAnimationLoop(null),
+  startLoop: () => { clock.getDelta(); renderer.setAnimationLoop(loop); },
+  renderOnce: () => { hudTimer = 0; frame(0); return window.walk53.state; },
   sim: (seconds, dt = 1 / 60) => { for (let t = 0; t < seconds; t += dt) update(dt); return window.walk53.state; },
 };
 

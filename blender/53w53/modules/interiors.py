@@ -504,7 +504,7 @@ def lobby_f01(fc):
     finish_default(fc, "Floor_Stone")
     fl = fc.sink("floor")
     # entrance threshold bridging the facade line to the slab
-    fl.box("Floor_Stone", 19.4, -0.1, Fz - 0.3, 22.6, 0.3, Fz + 0.005)
+    fc.sink("slab").box("Floor_Stone", 19.4, -0.1, Fz - 0.3, 22.6, 0.3, Fz + 0.005)
     fl.box("Metal_Dark", 19.6, 0.4, Fz + 0.005, 22.4, 2.2, Fz + 0.012, sides=True)   # entry mat
     # keep the route clear: entrance -> around the core -> lift lobby
     for r in ((18.0, 0.0, 24.0, 8.8), (10.5, 6.5, 14.0, 24.0), (28.0, 6.5, 31.5, 24.0),
@@ -884,30 +884,34 @@ def full_floor(fc):
     if not parts:
         fc.kit(K.bed(1.8), (-5, -1, 50, 19), (28.5, 13.0), rot=3, clear=0.3, step=0.15)
         fc.kit(K.armchair_pair(), (-5, -1, 50, 19), (15.0, 13.0), rot=1, clear=0.3)
+    # den / study in the south-west part of the plate
+    den = (-5, -1, 19.0, 16.8) if n != FIRST_SMALL else (-5, -1, 14.0, 19.0)
+    fc.kit(K.armchair_pair(), den, (11.0, 9.0), rot=0, clear=0.4)
+    fc.kit(K.desk(), (-5, -1, 27.0, 11.8), (22.0, 9.0), rot=0, clear=0.4)
+    fc.kit(K.bookshelf(2.4, 2.2), den, (9.0, 6.5), rot=0, clear=0.3)
+    fc.kit(K.living_set(2.4), den, (10.0, 13.0), rot=1, clear=0.4)
     for pref in ((24.0, 27.5), (12.0, 22.0), (35.0, 12.0)):
         fc.kit(K.plant(), (pref[0] - 2.5, pref[1] - 2.5, pref[0] + 2.5, pref[1] + 2.5), pref, clear=0.2)
     fc.light_grid(spacing=3.8, size=0.5, holes=core_holes(n))
 
 
 def penthouse(fc):
-    """Floor 77: open plan under the spire (no ceiling slab above)."""
+    """Floor 77: open plan at the tip of the spire (no ceiling slab above;
+    the faceted spire glass rises over it)."""
     Fz = fc.Fz
     finish_default(fc, "Floor_Stone")
-    foyer = (18.5, 16.8, 25.5, 19.4)
-    fc.block(foyer)
-    liv = (-5, 11.0, 50, 32)
-    fc.kit(K.living_set(3.0), liv, (22.0, 21.5), rot=0, clear=0.4)
-    fc.kit(K.piano(), liv, (17.0, 14.0), rot=1, clear=0.4)
-    fc.kit(K.dining(2), liv, (27.5, 14.0), rot=1, clear=0.35)
-    fc.kit(K.bed(1.8, nightstands=False), liv, (23.0, 24.5), rot=2, clear=0.3, step=0.1)
-    # glass screen behind the bed
-    fc.wall((20.5, 23.2), (25.5, 23.2), mat="Glass_Partition", sink="glass_partitions", th=0.05,
-            top=Fz + 2.2, block=False)
-    for pref in ((16.8, 12.3), (29.0, 12.3), (23.0, 19.8)):
-        fc.kit(K.plant(), (pref[0] - 1.5, pref[1] - 1.5, pref[0] + 1.5, pref[1] + 1.5), pref, clear=0.1)
+    fc.block((18.5, 16.8, 25.5, 19.3))                          # lift / stair foyer
+    allr = (-5, 10.0, 50, 32)
+    fc.kit(K.sofa(2.6), allr, (23.0, 20.2), rot=0, clear=0.25, step=0.1)
+    d, f = fc.sink("decor"), fc.sink("furniture")
+    fc.kit(K.piano(), allr, (23.0, 23.6), rot=2, clear=0.2, step=0.1)
+    fc.kit(K.dining(2), allr, (27.0, 13.2), rot=1, clear=0.2, step=0.1)
+    fc.kit(K.bed(1.6, nightstands=False), allr, (17.9, 12.6), rot=0, clear=0.2, step=0.1)
+    for pref in ((16.6, 11.9), (28.6, 16.0), (21.0, 21.6), (25.0, 21.6)):
+        fc.kit(K.plant(), (pref[0] - 1.2, pref[1] - 1.2, pref[0] + 1.2, pref[1] + 1.2), pref, clear=0.05,
+               step=0.1)
     # floor lamps (emissive shades) instead of ceiling panels
-    d = fc.sink("decor")
-    for x, y in ((19.0, 19.8), (27.0, 17.5), (17.5, 17.0)):
+    for x, y in ((20.6, 20.0), (27.2, 17.6), (17.6, 16.0), (25.6, 20.0)):
         if G.contains(fc.inner, x, y, 0.2):
             d.box("Metal_Dark", x - 0.02, y - 0.02, Fz, x + 0.02, y + 0.02, Fz + 1.5)
             d.box("Light_Emit", x - 0.2, y - 0.2, Fz + 1.5, x + 0.2, y + 0.2, Fz + 1.8)

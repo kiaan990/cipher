@@ -59,8 +59,9 @@ Tips
   the stair shaft.
 * Switch the viewport to Material Preview (Z > Material Preview) to see the
   glass and materials. Render engine is EEVEE.
-* The web walkthrough (web/index.html + out/53W53.glb) has collision,
-  stairs and a lift picker - see web/README in the project.
+* The web walkthrough (web/index.html, loading 53W53.glb + walkdata.json
+  from the same folder) has collision, stairs and a lift picker. Serve it
+  locally with:  cd web && python3 -m http.server 8000
 """
 
 
