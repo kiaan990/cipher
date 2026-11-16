@@ -77,7 +77,7 @@ class Kit:
     def bx(self, cat, mat, x0, y0, z0, x1, y1, z1, bottom=False):
         return self.add(cat, mat, P.box(x0, y0, z0, x1, y1, z1, bottom))
 
-    def rb(self, cat, mat, x0, y0, z0, x1, y1, z1, e=0.3, rx=0.0, rz=0.0, ry=0.0, sag=0.0, nu=12, nv=7,
+    def rb(self, cat, mat, x0, y0, z0, x1, y1, z1, e=0.3, rx=0.0, rz=0.0, ry=0.0, sag=0.0, nu=10, nv=6,
            pivot=None):
         vf = P.rbox(x0, y0, z0, x1, y1, z1, e, nu, nv, sag)
         if rx or rz or ry:
@@ -168,19 +168,10 @@ def lounge_chair(fab="Fabric_Blush", leg=BRZ):
     k = Kit(0.82, 0.86)
     k.lathe(F, leg, [(0.02, 0.0), (0.24, 0.0), (0.24, 0.015), (0.03, 0.03), (0.03, 0.2), (0.0, 0.2)], 16)
     k.rb(F, fab, -0.38, -0.36, 0.2, 0.38, 0.4, 0.44, e=0.3, sag=0.015)
-    seg = 7
-    for i in range(seg):
-        a0 = math.pi * (1.1 + 0.8 * i / seg)
-        a1 = math.pi * (1.1 + 0.8 * (i + 1) / seg)
-        am = (a0 + a1) / 2
-        r = 0.36
-        x, y = r * math.cos(am), r * math.sin(am) + 0.02
-        hgt = 0.95 - 0.25 * abs(i - (seg - 1) / 2) / ((seg - 1) / 2)
-        wseg = r * (a1 - a0) + 0.04
-        part = P.rbox(-wseg / 2, -0.07, 0.3, wseg / 2, 0.07, hgt, 0.35, 10, 6)
-        part = P.xf(part, rx=0.12, pivot=(0, 0, 0.3))
-        part = P.xf(part, rz=am + math.pi / 2, t=(x, y, 0))
-        k.add(F, fab, part, smooth=True)
+    # one curved shell for the back (partial revolve of a closed profile)
+    prof = [(0.29, 0.32), (0.39, 0.3), (0.43, 0.92), (0.38, 0.95), (0.33, 0.9), (0.29, 0.32)]
+    shell = P.lathe(prof, 14, 0.0, 0.04, a0=math.radians(200), a1=math.radians(340), cap_ends=True)
+    k.add(F, fab, shell, smooth=True)
     return k
 
 
@@ -304,9 +295,9 @@ def round_table(r=0.8, top=WAL, chairs=6, chair_kw=None, candles=True):
 # ------------------------------------------------------------------ lamps / decor
 def floor_lamp(h=1.62, shade="Lamp_Shade", metal=BRZ, light=True):
     k = Kit(0.45, 0.45)
-    k.lathe(D, metal, [(0.17, 0.0), (0.17, 0.015), (0.15, 0.025), (0.0, 0.025)], 20)
+    k.lathe(D, metal, [(0.17, 0.0), (0.17, 0.015), (0.15, 0.025), (0.0, 0.025)], 14)
     k.add(D, metal, P.cyl(0, 0, 0.02, h - 0.25, 0.012, 8, False, False), smooth=True)
-    k.lathe(D, shade, [(0.21, h - 0.32), (0.16, h)], 24, cap0=False, cap1=False, smooth=True)
+    k.lathe(D, shade, [(0.21, h - 0.32), (0.16, h)], 18, cap0=False, cap1=False, smooth=True)
     k.add(D, "Light_Emit", P.rbox(-0.035, -0.035, h - 0.24, 0.035, 0.035, h - 0.15, 0.7, 8, 5), smooth=True)
     if light:
         k.light((0, 0, h - 0.18), 25.0, "POINT", 0.08)
@@ -316,9 +307,9 @@ def floor_lamp(h=1.62, shade="Lamp_Shade", metal=BRZ, light=True):
 def table_lamp(z, shade="Lamp_Shade", base="Ceramic_Glaze", h=0.62):
     k = Kit(0.4, 0.4)
     k.lathe(D, base, [(0.0, z), (0.07, z), (0.11, z + 0.08), (0.12, z + 0.17), (0.08, z + 0.3), (0.025, z + 0.34),
-                      (0.025, z + 0.37), (0.0, z + 0.37)], 16)
+                      (0.025, z + 0.37), (0.0, z + 0.37)], 12)
     k.add(D, BRZ, P.cyl(0, 0, z + 0.37, z + h - 0.12, 0.008, 6, False, False))
-    k.lathe(D, shade, [(0.19, z + h - 0.24), (0.15, z + h)], 20, cap0=False, cap1=False)
+    k.lathe(D, shade, [(0.19, z + h - 0.24), (0.15, z + h)], 16, cap0=False, cap1=False)
     k.add(D, "Light_Emit", P.rbox(-0.03, -0.03, z + h - 0.18, 0.03, 0.03, z + h - 0.1, 0.7, 8, 5), smooth=True)
     return k
 
@@ -335,15 +326,15 @@ def vase_flowers(h=0.55, rng=None, vase="Ceramic_Glaze", bloom="Flower_White"):
     rng = rng or random.Random(5)
     k = Kit(0.5, 0.5)
     k.lathe(D, vase, [(0.0, 0.0), (0.07, 0.0), (0.11, 0.06), (0.12, 0.16), (0.07, 0.26), (0.06, 0.3),
-                      (0.075, 0.32)], 16, cap1=False)
-    for i in range(9):
+                      (0.075, 0.32)], 12, cap1=False)
+    for i in range(8):
         a = rng.uniform(0, 2 * math.pi)
         r = rng.uniform(0.08, 0.22)
         top = (r * math.cos(a), r * math.sin(a), h + rng.uniform(-0.12, 0.15))
         k.add(D, LEAF, P.beam((0.0, 0.0, 0.25), top, 0.008))
         s = rng.uniform(0.04, 0.07)
         k.add(D, bloom, P.rbox(top[0] - s, top[1] - s, top[2] - s * 0.6, top[0] + s, top[1] + s, top[2] + s * 0.6,
-                               0.7, 8, 5), smooth=True)
+                               0.7, 7, 4), smooth=True)
         for j in range(2):
             b = rng.uniform(0, 2 * math.pi)
             mid = tuple(top[q] * 0.6 + (0, 0, 0.25)[q] * 0.4 for q in range(3))
@@ -446,11 +437,12 @@ def books_row(k, x0, x1, y_back, z, hmax, rng, depth=0.24, cat=D):
                 if zz + t > z + hmax - 0.02:
                     break
                 dx = rng.uniform(-0.01, 0.01)
-                k.bx(cat, rng.choice(BOOKS), x + dx, y_back + 0.02, zz, x + dx + bw, y_back + depth - 0.01, zz + t)
+                k.add(cat, rng.choice(BOOKS), P.book(x + dx, y_back + 0.02, zz, x + dx + bw, y_back + depth - 0.01,
+                                                     zz + t))
                 zz += t
             x += bw + 0.03
             continue
-        bw = rng.uniform(0.018, 0.05)
+        bw = rng.uniform(0.032, 0.078)
         bh = min(hmax - 0.015, rng.uniform(0.18, 0.31))
         bd = rng.uniform(depth * 0.7, depth)
         mat = rng.choice(BOOKS)
@@ -460,7 +452,7 @@ def books_row(k, x0, x1, y_back, z, hmax, rng, depth=0.24, cat=D):
             k.add(cat, mat, vf)
             x += 0.07 + bw + 0.01
             continue
-        k.bx(cat, mat, x, y_back + depth - bd, z, x + bw, y_back + depth, z + bh)
+        k.add(cat, mat, P.book(x, y_back + depth - bd, z, x + bw, y_back + depth, z + bh))
         x += bw + rng.uniform(0.0, 0.004)
 
 
@@ -481,6 +473,11 @@ def bookcase(w=1.2, h=2.4, rng=None, wood=WAL, shelf=0.36, d=0.36, plinth=0.1, c
     for zz in shelves + [h - t]:
         k.cb(F, wood, -w / 2 + t, -hd + 0.02, zz, w / 2 - t, hd - 0.01, zz + t, 0.003)
     for zz in shelves:
+        if zz > 2.6:                        # high shelves: a few objects / short runs only
+            x0 = -w / 2 + t + rng.uniform(0.0, w * 0.4)
+            books_row(k, x0, min(w / 2 - t, x0 + w * 0.25), -hd + 0.03, zz + t, shelf - t, rng, depth=d - 0.08,
+                      cat=cat_books)
+            continue
         books_row(k, -w / 2 + t, w / 2 - t, -hd + 0.03, zz + t, shelf - t, rng, depth=d - 0.08, cat=cat_books)
     return k
 
@@ -599,7 +596,7 @@ def kitchen_run(w=4.2, body=LACW, top=STAT, tall=1.2, h=3.0):
     x = x0 + 0.45
     while x < w / 2 - 0.4:
         k.lathe(D, rng.choice(("Ceramic_Glaze", "Ceramic_Dark")),
-                [(0.0, 1.89), (0.05, 1.89), (0.07, 1.98), (0.04, 2.05), (0.0, 2.05)], 12, x, -hd + 0.15)
+                [(0.0, 1.89), (0.05, 1.89), (0.07, 1.98), (0.04, 2.05), (0.0, 2.05)], 10, x, -hd + 0.15)
         x += rng.uniform(0.25, 0.45)
     return k
 
@@ -680,8 +677,8 @@ def artwork(w, h, z_center, rng, frame=BRZ, style="blocks", depth=0.06):
         zz = za + f + 0.08
         for i in range(n):
             bh = (ih - 0.08 * (n - 1)) / n * rng.uniform(0.8, 1.1)
-            k.rb(D, rng.choice(pal), -iw / 2 + 0.05, depth - 0.03, zz, iw / 2 - 0.05, depth - 0.012,
-                 min(zz + bh, zb - f - 0.06), e=0.15, nu=8, nv=4)
+            k.cb(D, rng.choice(pal), -iw / 2 + 0.05, depth - 0.03, zz, iw / 2 - 0.05, depth - 0.012,
+                 min(zz + bh, zb - f - 0.06), 0.004)
             zz += bh + 0.08
     else:                                      # scattered shapes (abstract)
         for i in range(rng.randint(6, 11)):

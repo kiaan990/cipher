@@ -334,7 +334,7 @@ def lounges(fc, rng):
     for (x, y), kind in (((1.6, 1.5), "fig"), ((12.6, 1.4), "palm"), ((41.0, 1.4), "fig"), ((43.6, 18.6), "palm"),
                          ((31.2, 21.0), "olive"), ((32.0, 8.0), "fig")):
         fc.put(FU.plant(kind, rng.uniform(1.8, 2.3), random.Random(int(x * 10 + y))), x, y, rng.uniform(0, 360))
-    fc.put(FU.bench(2.2, top="Fabric_Velvet_Green"), 12.8, 4.0, 90)
+    fc.put(FU.bench(2.2, top="Fabric_Velvet_Green"), 10.6, 4.4, 90)
 
 
 def north(fc, rng):

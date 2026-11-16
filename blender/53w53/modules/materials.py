@@ -531,9 +531,13 @@ def r_thin_glass(t, base, tint=(0.85, 0.93, 0.92, 1), refl=0.0, rough=0.02, ior=
     """Architectural single-sheet glass: Fresnel mix of tinted Transparent and
     Glossy (no refraction offset, no caustics noise, cheap & correct for
     single-skin glazing). refl adds a low-e coating reflectance floor."""
-    fres = t.n("ShaderNodeFresnel")
-    t.set(fres, "IOR", ior)
-    fac = t.maprange(t.o(fres), 0.0, 1.0, refl, 1.0)
+    # two-sided Schlick Fresnel: thin sheets reflect identically from both
+    # sides (the Fresnel node would do total internal reflection on backfaces)
+    f0 = ((ior - 1.0) / (ior + 1.0)) ** 2
+    cosi = t.math("ABSOLUTE", t.vmath("DOT_PRODUCT", t.o(t.geo(), "Normal"), t.o(t.geo(), "Incoming")))
+    k = t.math("POWER", t.math("SUBTRACT", 1.0, t.math("MINIMUM", cosi, 1.0)), 5.0)
+    fres_v = t.math("ADD", f0, t.math("MULTIPLY", k, 1.0 - f0))
+    fac = t.maprange(fres_v, 0.0, 1.0, refl, 1.0)
     tr = t.n("ShaderNodeBsdfTransparent")
     t.set(tr, "Color", tint)
     gl = t.n("ShaderNodeBsdfGlossy", distribution="GGX")
@@ -556,7 +560,8 @@ def r_thin_glass(t, base, tint=(0.85, 0.93, 0.92, 1), refl=0.0, rough=0.02, ior=
 
 def r_solid_glass(t, base, rough=0.0):
     """Real refractive glass for thick objects (vases, tables)."""
-    b = t.principled(base=(0.95, 0.98, 0.97, 1), rough=rough, ior=1.52, trans=1.0)
+    tint = base if max(base[:3]) > 0.2 else tuple(min(1.0, c * 8.0) for c in base[:3]) + (1.0,)
+    b = t.principled(base=tint, rough=rough, ior=1.52, trans=1.0)
     t.output(b)
 
 
@@ -623,6 +628,34 @@ def r_emissive(t, base, kelvin=3200.0, strength=12.0, ctrl="CTRL_INT_LIGHT"):
     t.set(em, "Color", temp)
     t.set(em, "Strength", s)
     t.output(t.o(em))
+
+
+def r_emit_color(t, base, strength=6.0, ctrl="CTRL_INT_LIGHT", glass=False):
+    """Emitter that keeps its own (non-blackbody) colour: coloured coves,
+    pool lights, signals, car lamps. Optional glossy lens on top."""
+    k = t.value(1.0, ctrl) if ctrl else None
+    em = t.n("ShaderNodeEmission")
+    t.set(em, "Color", base)
+    t.set(em, "Strength", t.math("MULTIPLY", k, strength) if k else strength)
+    if not glass:
+        t.output(t.o(em))
+        return
+    g = t.principled(base=_lin(base, 0.3), rough=0.05, coat=1.0, coat_rough=0.02)
+    add = t.n("ShaderNodeAddShader")
+    t.nt.links.new(t.o(em), add.inputs[0])
+    t.nt.links.new(t.o(g), add.inputs[1])
+    t.output(t.o(add))
+
+
+def r_lacquer(t, base, rough=0.25, coat=1.0):
+    b = t.principled(base=color_var(t, base, 2.0, 0.03), rough=rough, coat=coat, coat_rough=0.04,
+                     normal=micro_bump(t, 30.0, 0.02))
+    t.output(b)
+
+
+def r_wax(t, base):
+    b = t.principled(base=base, rough=0.4, sss=1.0, sss_radius=(1.0, 0.6, 0.3), sss_scale=0.02)
+    t.output(b)
 
 
 def r_alabaster(t, base):
@@ -819,6 +852,24 @@ def _eq(*keys):
 
 
 RULES = [
+    # --- exact-ish names that would otherwise be caught by broader patterns
+    (_has("gold_leaf", "gilt", "gilded"), r_gold_leaf, {}),
+    (_eq("glass_black", "black_glass"), r_lacquer, dict(rough=0.03, coat=1.0)),
+    (_has("light_skylight", "skylight"), r_emit_color, dict(strength=6.0, ctrl="CTRL_INT_LIGHT")),
+    (_has("light_cove", "light_downlight", "light_wine", "light_strip", "light_led"), r_emit_color,
+     dict(strength=8.0, ctrl="CTRL_INT_LIGHT")),
+    (_has("pool_light", "fire_glow", "fire"), r_emit_color, dict(strength=5.0, ctrl="CTRL_INT_LIGHT")),
+    (_has("lamp_shade", "lampshade"), r_emissive, dict(kelvin=2800, strength=3.0)),
+    (_has("car_lights", "signal_lens", "tail_light", "head_light"), r_emit_color,
+     dict(strength=4.0, ctrl=None, glass=True)),
+    (_has("wine_bottle", "bottle", "vase_glass"), r_solid_glass, dict(rough=0.02)),
+    (_has("candle", "wax"), r_wax, {}),
+    (_has("lacquer", "piano"), r_lacquer, dict(rough=0.15)),
+    (_has("ceramic", "porcelain", "glaze"), r_lacquer, dict(rough=0.1, coat=0.6)),
+    (_has("bus_", "signal_", "sign"), r_car_paint, {}),
+    (_has("wheel_rim", "rim"), r_metal, dict(rough=0.25, aniso=0.2)),
+    (_has("_distant"), r_facade_panel, dict(rough=0.8, stain=0.1)),
+    (_has("fruit", "flower"), r_lacquer, dict(rough=0.45, coat=0.3)),
     # --- emissive (before metals: "Lamp_Grey" is a pole, so match exact names)
     (_eq("light_emit"), r_emissive, dict(kelvin=3200, strength=12.0)),
     (_has("emit", "led_strip", "lightpanel", "light_panel", "cove_light"), r_emissive, dict(kelvin=3000, strength=10.0)),
@@ -839,7 +890,7 @@ RULES = [
     (_has("glass"), r_thin_glass, dict(tint=(0.9, 0.95, 0.94, 1), refl=0.03)),
     (_has("thermolux", "frosted", "translucent"), r_translucent_panel, {}),
     # --- water
-    (_has("river", "harbor", "pool_dark"), r_river, {}),
+    (_has("river", "harbor", "pool_dark", "water_distant"), r_river, {}),
     (_has("water"), r_water, {}),
     # --- plants
     (_has("green_wall", "plant_wall", "living_wall"), r_foliage, dict(wall=True)),

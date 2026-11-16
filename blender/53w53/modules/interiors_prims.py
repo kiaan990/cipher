@@ -101,6 +101,13 @@ def cbox(x0, y0, z0, x1, y1, z1, b=0.01):
     return verts, orient(verts, faces, (cx, cy, cz))
 
 
+def book(x0, y0, z0, x1, y1, z1):
+    """Box with only the faces seen on a shelf (spine +y, top, two sides)."""
+    verts = [(x0, y0, z0), (x1, y0, z0), (x1, y1, z0), (x0, y1, z0),
+             (x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1)]
+    return verts, [(4, 5, 6, 7), (1, 2, 6, 5), (2, 3, 7, 6), (3, 0, 4, 7)]
+
+
 def box(x0, y0, z0, x1, y1, z1, bottom=True):
     x0, x1 = min(x0, x1), max(x0, x1)
     y0, y1 = min(y0, y1), max(y0, y1)
@@ -113,7 +120,7 @@ def box(x0, y0, z0, x1, y1, z1, bottom=True):
     return verts, faces
 
 
-def rbox(x0, y0, z0, x1, y1, z1, e=0.3, nu=12, nv=7, sag=0.0):
+def rbox(x0, y0, z0, x1, y1, z1, e=0.3, nu=10, nv=6, sag=0.0):
     """Rounded 'pillow' box (superellipsoid). e: 0.15 boxy .. 1 ellipsoid.
     sag pulls the top centre down (seat cushions)."""
     cx, cy, cz = (x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2
@@ -150,7 +157,7 @@ def rbox(x0, y0, z0, x1, y1, z1, e=0.3, nu=12, nv=7, sag=0.0):
 
 
 # ------------------------------------------------------------------ revolved
-def lathe(profile, seg=16, cx=0.0, cy=0.0, cap0=True, cap1=True, a0=0.0, a1=None):
+def lathe(profile, seg=16, cx=0.0, cy=0.0, cap0=True, cap1=True, a0=0.0, a1=None, cap_ends=False):
     """Revolve [(r, z), ...] (bottom -> top) about the vertical axis."""
     full = a1 is None
     a1 = 2 * math.pi if full else a1
@@ -168,6 +175,16 @@ def lathe(profile, seg=16, cx=0.0, cy=0.0, cap0=True, cap1=True, a0=0.0, a1=None
             if profile[k][0] < 1e-6 and profile[k + 1][0] < 1e-6:
                 continue
             faces.append((b0 + i, b0 + j, b1 + j, b1 + i))
+    if not full and cap_ends:                 # close a partial revolve (closed profile)
+        for i, sgn in ((0, -1.0), (seg, 1.0)):
+            a = a0 + (a1 - a0) * i / seg
+            npf = len(profile) - (1 if tuple(profile[0]) == tuple(profile[-1]) else 0)
+            f = [k * nring + i for k in range(npf)]
+            nrm = newell([verts[q] for q in f])
+            tx, ty = -math.sin(a) * sgn, math.cos(a) * sgn
+            if nrm[0] * tx + nrm[1] * ty < 0:
+                f.reverse()
+            faces.append(tuple(f))
     if full:
         if cap0 and profile[0][0] > 1e-6:
             faces.append(tuple(reversed(range(seg))))

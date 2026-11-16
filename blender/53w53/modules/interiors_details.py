@@ -362,7 +362,7 @@ def green_wall(fc, p0, p1, z0, z1, nrm, density=70.0, seed=7, sink="plants"):
         a = rng.uniform(-math.pi, math.pi)
         out = rng.uniform(0.3, 1.0)
         dl = (math.cos(a) * 0.8, out, math.sin(a) * 0.9 - 0.25)
-        size = rng.uniform(0.12, 0.3) * (1.4 if mat in ("Foliage_Dark", "Green_Wall") else 1.0)
+        size = rng.uniform(0.16, 0.38) * (1.4 if mat in ("Foliage_Dark", "Green_Wall") else 1.0)
         base = (s, t, z)
         vf = P.leaf(base, dl, size, size * rng.uniform(0.35, 0.6), rng.uniform(0.1, 0.5), rng.uniform(-0.8, 0.8))
         mm.mesh(mat, *map_wall(vf, p0, u, nrm))

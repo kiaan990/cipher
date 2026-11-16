@@ -115,15 +115,17 @@ def desk():
 
 
 def bookshelf(w=2.4, h=2.4):
+    """Lean shelf: each shelf row is a few long 'book bands' (few boxes)."""
     parts = [(F, WAL, -w / 2, -0.2, 0.0, w / 2, 0.2, h)]
     cols = ["Book_Red", "Book_Blue", "Book_Ochre", "Book_Green"]
     k = 0
     z = 0.35
     while z + 0.3 < h:
         x = -w / 2 + 0.05
-        while x + 0.3 < w / 2:
-            parts.append((D, cols[k % 4], x, 0.2, z, x + 0.28, 0.24, z + 0.26))
-            x += 0.32
+        for frac in (0.3, 0.25, 0.35):
+            x1 = min(w / 2 - 0.05, x + (w - 0.1) * frac)
+            parts.append((D, cols[k % 4], x, 0.2, z, x1, 0.24, z + 0.22 + 0.04 * (k % 2)))
+            x = x1 + 0.03
             k += 1
         z += 0.45
     return (w, 0.5, parts)

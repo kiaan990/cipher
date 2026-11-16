@@ -110,7 +110,7 @@ def _world(scene):
         pass
     nt = world.node_tree
     nodes = {n.name: n for n in nt.nodes}
-    if "SKY" not in nodes or "CTRL_HORIZON_COLOR" not in nodes:
+    if "SKY" not in nodes or "CTRL_HORIZON_GLOW" not in nodes:
         nt.nodes.clear()
         out = nt.nodes.new("ShaderNodeOutputWorld")
         out.location = (600, 0)
@@ -149,6 +149,26 @@ def _world(scene):
         soft.inputs["From Min"].default_value = 0.004
         soft.inputs["From Max"].default_value = -0.012
         nt.links.new(sep.outputs["Z"], soft.inputs["Value"])
+        # above the horizon: aerial haze brightens the lowest ~12 deg of sky
+        # toward the horizon colour (factor (1 - z/0.2)^2 * 0.85)
+        above = nt.nodes.new("ShaderNodeMapRange")
+        above.inputs["From Min"].default_value = 0.2
+        above.inputs["From Max"].default_value = 0.0
+        nt.links.new(sep.outputs["Z"], above.inputs["Value"])
+        sq = nt.nodes.new("ShaderNodeMath")
+        sq.operation = "POWER"
+        sq.inputs[1].default_value = 2.0
+        nt.links.new(above.outputs["Result"], sq.inputs[0])
+        amt = nt.nodes.new("ShaderNodeMath")
+        amt.operation = "MULTIPLY"
+        amt.name = amt.label = "CTRL_HORIZON_GLOW"
+        amt.inputs[1].default_value = 0.85
+        nt.links.new(sq.outputs[0], amt.inputs[0])
+        mx = nt.nodes.new("ShaderNodeMath")
+        mx.operation = "MAXIMUM"
+        nt.links.new(amt.outputs[0], mx.inputs[0])
+        nt.links.new(soft.outputs["Result"], mx.inputs[1])
+        soft = type("S", (), {"outputs": {"Result": mx.outputs[0]}})()
         mix = nt.nodes.new("ShaderNodeMix")
         mix.data_type = "RGBA"
         nt.links.new(soft.outputs["Result"], mix.inputs["Factor"])
@@ -188,9 +208,9 @@ def set_sky(scene, az_true, el, air=1.0, aerosol=1.2, ozone=1.0, sky_scale=1.0, 
     # from the measured horizontal sky irradiance so it tracks sun elevation
     sk = _sky_irr(el)
     world.node_tree.nodes["CTRL_HORIZON_COLOR"].outputs[0].default_value = (
-        *(c * 3.0 / math.pi for c in _whiten(sk, 0.6)), 1.0)
+        *(c * 9.0 / math.pi for c in _whiten(sk, 0.5)), 1.0)
     world.node_tree.nodes["CTRL_GROUND_COLOR"].outputs[0].default_value = (
-        *(c * 1.5 / math.pi for c in _whiten(sk, 0.5)), 1.0)
+        *(c * 7.5 / math.pi for c in _whiten(sk, 0.5)), 1.0)
     sun = _sun(scene)
     irr = sun_irradiance(el)
     peak = max(irr) if max(irr) > 0 else 1.0
@@ -323,7 +343,7 @@ DAY_DATE = (10, 1, 16.25)    # Oct 1, 4:15 pm EDT -> sun WSW ~241 deg true, ~25 
 def preset_day(scene=None, exposure=0.0):
     scene = scene or bpy.context.scene
     az, el = solar_position(*DAY_DATE)
-    set_sky(scene, az, el, air=1.0, aerosol=1.8, ozone=1.0)
+    set_sky(scene, az, el, air=1.0, aerosol=1.5, ozone=1.0, sky_scale=2.0)
     color_management(scene, exposure, "Medium High Contrast", white_k=6000)
     cycles_settings(scene)
     set_controls({"CTRL_CITY_GLOW": 0.0, "CTRL_INT_LIGHT": 1.0, "CTRL_STREET": 0.0,
@@ -342,12 +362,16 @@ def preset_dusk(scene=None, exposure=0.0):
     az, _ = solar_position(*DAY_DATE)
     el = -3.5
     set_sky(scene, az + 15.0, el, air=1.0, aerosol=1.0, ozone=1.5, sky_scale=60.0)
-    color_management(scene, exposure, "Medium High Contrast", white_k=4600)
+    nodes = scene.world.node_tree.nodes   # darker city below the twilight horizon
+    for nm, k in (("CTRL_HORIZON_COLOR", 0.3), ("CTRL_GROUND_COLOR", 0.3)):
+        c = nodes[nm].outputs[0].default_value
+        nodes[nm].outputs[0].default_value = (c[0] * k, c[1] * k, c[2] * k, 1.0)
+    color_management(scene, exposure, "Medium High Contrast", white_k=5200)
     cycles_settings(scene)
-    set_controls({"CTRL_CITY_GLOW": 3.0, "CTRL_INT_LIGHT": 1.6, "CTRL_STREET": 3.0,
-                  "CTRL_HAZE_DIST": 3500.0, "CTRL_HAZE_MAX": 0.9,
+    set_controls({"CTRL_CITY_GLOW": 0.5, "CTRL_INT_LIGHT": 4.0, "CTRL_STREET": 1.5,
+                  "CTRL_HAZE_DIST": 4500.0, "CTRL_HAZE_MAX": 0.9,
                   "CTRL_HAZE_COLOR": haze_color(scene)})
-    scale_lamps(K * 3.0)
+    scale_lamps(K * 6.0)
     scene["light_preset"] = "dusk"
     return az, el
 

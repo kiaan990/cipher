@@ -109,9 +109,12 @@ STREET_W = 22.0
 STREET0 = -22.0          # W 53rd St south building line
 
 
-def ensure(scene=None, radius=2600.0, seed=53):
+def ensure(scene=None, radius=2600.0, seed=53, force=False):
     if bpy.data.collections.get(COL):
         return bpy.data.collections[COL]
+    if any(o.name.startswith("Site_Distant") for o in bpy.data.objects) and not force:
+        print("[context] site already has a distant city (Site_Distant_*): no render-time filler")
+        return None
     scene = scene or bpy.context.scene
     col = bpy.data.collections.new(COL)
     scene.collection.children.link(col)
@@ -124,6 +127,9 @@ def ensure(scene=None, radius=2600.0, seed=53):
         "Glass_Neighbor": _mat("Glass_Neighbor", (0.18, 0.24, 0.30, 1)),
         "Stone_Light": _mat("Stone_Light", (0.78, 0.75, 0.68, 1)),
         "Roof_Grey": _mat("Roof_Grey", (0.38, 0.38, 0.38, 1)),
+        "Brick_Light": _mat("Brick_Light", (0.58, 0.40, 0.30, 1)),
+        "Granite_Black": _mat("Granite_Black", (0.07, 0.07, 0.075, 1)),
+        "Glass_Blue": _mat("Glass_Blue", (0.22, 0.32, 0.40, 1)),
     }
     mbs = {k: _MB() for k in mats}
     roofs = _MB()
@@ -158,8 +164,8 @@ def ensure(scene=None, radius=2600.0, seed=53):
                         rng.lognormvariate(math.log(18 + 22 * core), 0.45)
                     if (x - bx0) < 40 or (bx1 - x - w) < 40:
                         h *= 1.3
-                    kind = rng.choices(list(mats), weights=(3, 2, 4, 1, 2, 0))[0] if not tall else \
-                        rng.choice(["Glass_Neighbor", "Window_Dark", "Glass_Neighbor", "Stone_Neighbor"])
+                    kind = rng.choices(list(mats), weights=(3, 2, 4, 1, 1, 0, 3, 1, 1))[0] if not tall else \
+                        rng.choice(["Glass_Neighbor", "Window_Dark", "Glass_Blue", "Stone_Neighbor", "Granite_Black"])
                     if kind == "Roof_Grey":
                         kind = "Stone_Neighbor"
                     mbs[kind].box(x + 0.5, y0 + 0.5, 0.0, x + w - 0.5, y1 - 0.5, h, top=False)

@@ -17,6 +17,19 @@ objects named F##_<part>:
   F##_art     artworks (gallery floors / lobby)                   no
   F##_lights  ceiling light panels (emissive)                     no
   F06_pool / F06_water                                            yes / no
+  F##_casing   white-cased slanted diagrid columns (all floors)   collide
+  F##_ceiling  coffers / cove soffits / pool beams                no
+  F##_trim     panelling, bronze trim, door portals               no
+  F##_millwork wine racks                                         collide
+  F##_plants   vertical gardens (F06)                             no
+
+Showcase floors (SHOWCASE: lobby, galleries, pool, amenity, F30, F65, F77)
+use the detailed kits of interiors_hq / interiors_furn and real lights;
+every other floor keeps the lean box kits (GLB budget). Detail modules:
+interiors_lobby (F01), interiors_amenity (F06 pool, F07 wine room),
+interiors_apts (casings, cove ceilings, penthouse), interiors_details
+(panelling, coffers, coves, casings, green walls), interiors_prims (mesh
+primitives), interiors_furn (furniture), interiors_hq (kit API adapter).
 
 Every object carries obj["floor"] = n and obj["collide"].
 Empties: LIFT_STOP_F## (1 m in front of the lift door, at floor level) and
@@ -46,7 +59,8 @@ for _m in (PR, G, K, FU, HQ):
 from modules import interiors_lobby as LOBBY      # noqa: E402
 from modules import interiors_amenity as AMEN     # noqa: E402
 from modules import interiors_apts as APTS        # noqa: E402
-for _m in (LOBBY, AMEN, APTS):
+from modules import interiors_details as DT       # noqa: E402
+for _m in (DT, LOBBY, AMEN, APTS):
     importlib.reload(_m)
 
 # Floors that get detailed furniture, real lights and finishes (the camera /
@@ -170,24 +184,41 @@ EMISSIVE = {
     "Light_Cove": ((1.0, 0.80, 0.58, 1), 9.0),
     "Light_Skylight": ((0.86, 0.93, 1.0, 1), 5.0),
     "Pool_Light": ((0.45, 0.82, 1.0, 1), 9.0),
-    "Light_Wine": ((1.0, 0.66, 0.36, 1), 5.0),
+    "Light_Wine": ((1.0, 0.52, 0.2, 1), 0.45),
     "Light_Downlight": ((1.0, 0.86, 0.68, 1), 14.0),
 }
 
 
+def _pbr_version():
+    try:
+        from modules import materials as MT
+        return getattr(MT, "VERSION", None)
+    except Exception:
+        return None
+
+
 def emissive(name, rgba, strength):
+    """Coloured emitter (fire, pool light, LED cove...). Built as a plain
+    Emission shader and stamped with the materials pass' version so that pass
+    (which would turn every emitter into 3000 K white) leaves it as is."""
     m = bpy.data.materials.get(name)
     if m is not None:
         return m
-    m = C.mat(name, color=rgba)
-    b = m.node_tree.nodes.get("Principled BSDF") if m.node_tree else None
-    if b:
-        for key in ("Emission Color", "Emission"):
-            if key in b.inputs:
-                b.inputs[key].default_value = rgba
-                break
-        if "Emission Strength" in b.inputs:
-            b.inputs["Emission Strength"].default_value = strength
+    m = bpy.data.materials.new(name)
+    m.use_nodes = True
+    m.diffuse_color = rgba
+    nt = m.node_tree
+    for nd in list(nt.nodes):
+        nt.nodes.remove(nd)
+    em = nt.nodes.new("ShaderNodeEmission")
+    em.inputs["Color"].default_value = rgba
+    em.inputs["Strength"].default_value = strength
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    nt.links.new(em.outputs[0], out.inputs["Surface"])
+    v = _pbr_version()
+    if v is not None:
+        m["pbr_version"] = v
+        m["pbr_recipe"] = "interiors_emissive"
     return m
 
 
@@ -251,11 +282,13 @@ class FloorCtx:
         return (p[0] + d[0] * L, p[1] + d[1] * L)
 
     def wall(self, p0, p1, openings=(), mat="Wall_White", sink="walls", th=WALL_T, door_h=DOOR_H,
-             top=None, art=False, block=True):
+             top=None, art=None, block=True):
         """Axis-aligned or free wall; openings (s0, s1) along the wall from p0."""
         if p0 is None or p1 is None:
             return
         z1 = top if top is not None else self.zc
+        if art is None:
+            art = self.showcase and mat == "Wall_White"
         ops = [(a, b, self.Fz + door_h) for a, b in openings]
         G.wall(self.sink(sink), mat, p0, p1, self.Fz, z1, th, ops, self.art_faces if art else None)
         if block:
@@ -385,7 +418,7 @@ def landing_door(fc, xc, y_face, w, outward):
     """Closed lift landing door leaves in an opening (y_face = outer face)."""
     L = fc.sink("lift")
     y = y_face - 0.12 if outward > 0 else y_face + 0.06
-    L.box("Lift_Steel", xc - w / 2, y, fc.Fz, xc + w / 2, y + 0.06, fc.Fz + 2.3)
+    L.box("Bronze_Trim" if fc.n == 1 else "Lift_Steel", xc - w / 2, y, fc.Fz, xc + w / 2, y + 0.06, fc.Fz + 2.3)
     L.box("Metal_Dark", xc - 0.005, y - 0.002, fc.Fz, xc + 0.005, y + 0.062, fc.Fz + 2.3)
 
 
@@ -580,53 +613,7 @@ def finish_default(fc, mat, extra_stone=()):
 
 
 def lobby_f01(fc):
-    Fz, zc = fc.Fz, fc.zc
-    finish_default(fc, "Floor_Stone")
-    fl = fc.sink("floor")
-    # entrance threshold bridging the facade line to the slab
-    fc.sink("slab").box("Floor_Stone", 19.4, -0.1, Fz - 0.3, 22.6, 0.3, Fz + 0.005)
-    fl.box("Metal_Dark", 19.6, 0.4, Fz + 0.005, 22.4, 2.2, Fz + 0.012, sides=True)   # entry mat
-    # keep the route clear: entrance -> around the core -> lift lobby
-    for r in ((18.0, 0.0, 24.0, 8.8), (10.5, 6.5, 14.0, 24.0), (28.0, 6.5, 31.5, 24.0),
-              (13.0, 18.8, 29.0, 24.0)):
-        fc.block(r)
-    # walnut cladding on core (south / west / east faces) and north frieze
-    d = fc.sink("decor")
-    x0, y0, x1, y1 = C.CORE
-    w = fc.sink("walls")
-    w.box("Wood_Walnut", x0 - 0.06, y0 - 0.06, Fz, x1 + 0.06, y0, zc)
-    w.box("Wood_Walnut", x0 - 0.06, y0, Fz, x0, y1, zc)
-    w.box("Wood_Walnut", x1, y0, Fz, x1 + 0.06, y1, zc)
-    w.box("Wood_Walnut", x0, y1, Fz + 2.7, x1, y1 + 0.06, zc)
-    # big artwork facing the entrance (on the core's south face)
-    hang_art(fc, [((26.5, y0 - 0.06), (15.5, y0 - 0.06), (0, -1), Fz, zc)], random.Random(53), zc=3.3, big=True)
-    # reception desk (east of the entry route)
-    f = fc.sink("furniture")
-    f.box("Wood_Walnut", 32.0, 5.0, Fz, 36.5, 5.9, Fz + 1.05)
-    f.box("Marble_White", 31.9, 4.9, Fz + 1.05, 36.6, 6.0, Fz + 1.1)
-    f.box("Wood_Walnut", 32.0, 7.6, Fz, 36.5, 8.0, Fz + 2.6)
-    d.box("Metal_Dark", 33.0, 5.3, Fz + 1.1, 33.5, 5.35, Fz + 1.45)
-    d.box("Leather_Tan", 33.8, 6.4, Fz, 34.3, 6.9, Fz + 0.5)
-    fc.block((31.5, 4.5, 37.0, 8.5))
-    # seating groups west, plants, benches
-    fc.kit(fc.K.living_set(2.6), (-3, 1, 10.4, 9.5), (5, 5.5), rot=1)
-    fc.kit(fc.K.living_set(2.4), (-3, 9.5, 10.4, 24), (4.5, 15.5), rot=1)
-    fc.kit(fc.K.bench(3.0), (24.5, 1, 31.0, 8.5), (27.5, 3.0), rot=0, clear=0.3)
-    for p in ((17.5, 1.2), (24.6, 1.2), (2.0, 21.0), (40.0, 18.0), (30.5, 23.0), (11.0, 23.5)):
-        fc.kit(fc.K.plant(), (p[0] - 1, p[1] - 1, p[0] + 1, p[1] + 1), p, clear=0.1)
-    fc.kit(fc.K.living_set(2.4), (32, 9, 46, 23), (38, 15), rot=3)
-    # mailroom/package room enclosure (north-east)
-    fc.wall((31.5, 24.0), (36.0, 24.0), openings=[(1.0, 2.2)], mat="Wood_Walnut")
-    e = fc.to_edge((36.0, 24.0), (0.0, 1.0))
-    fc.wall((36.0, 24.0), e, mat="Wood_Walnut")
-    e2 = fc.to_edge((31.5, 24.0), (0.0, 1.0))
-    fc.wall((31.5, 24.0), e2, mat="Wood_Walnut")
-    # lights: emissive ceiling panels + a few real lights
-    fc.light_grid(spacing=5.0, size=0.9, holes=[C.CORE])
-    for i, (x, y) in enumerate(((7, 6), (21, 4.5), (35, 9), (21, 21.5), (6, 17), (38, 18))):
-        fc.point_light("Lobby_Area_%d" % i, (x, y, zc - 0.2), energy=500.0, kind="AREA", size=3.0)
-    fc.point_light("Lobby_Point_Desk", (34.2, 6.5, Fz + 3.0), energy=150.0)
-    fc.point_light("Lobby_Point_Entry", (21.0, 2.0, Fz + 3.5), energy=200.0)
+    LOBBY.build(fc)
 
 
 def gallery(fc):
@@ -671,10 +658,8 @@ def gallery(fc):
         res = fc.planner.place((0.8, 0.8, []), r, (px, py), 0, 0.4, 1.0)
         if res:
             x, y, _ = res
-            fc.sink("furniture").box("Gallery_Wall", x - 0.4, y - 0.4, Fz, x + 0.4, y + 0.4, Fz + 0.9)
-            hgt = rng.uniform(0.6, 1.4)
-            fc.sink("decor").box(rng.choice(["Bronze", "Art_Black", "Art_Red", "Metal_Dark"]),
-                                 x - 0.22, y - 0.18, Fz + 0.9, x + 0.22, y + 0.18, Fz + 0.9 + hgt)
+            fc.sink("furniture").mesh("Gallery_Wall", *PR.cbox(x - 0.4, y - 0.4, Fz, x + 0.4, y + 0.4, Fz + 0.9, 0.01))
+            APTS.sculpture(fc, x, y, Fz + 0.9, rng)
     # east connection doorway towards MoMA (x ~ 46)
     yc0, yc1 = 10.3, 13.7
     pa = fc.to_edge((38.0, yc0), (1, 0))
@@ -691,6 +676,8 @@ def gallery(fc):
         fc.block((xm - 1.5, yc0, max(pa[0], pb[0]), yc1))
         fc.empty("MOMA_LINK_F%02d" % n, (xm + 1.0, (yc0 + yc1) / 2, Fz), kind="moma_link")
     fc.light_grid(spacing=3.6, strip=(2.0, 0.2), holes=[C.CORE])
+    for i, (x, y) in enumerate(((6.0, 12.0), (37.0, 14.0))):
+        fc.point_light("F%02d_Gallery_%d" % (n, i), (x, y, zc - 0.2), 500.0, "AREA", 4.0, color=(1.0, 0.96, 0.9))
 
 
 def fitness_f03(fc):
@@ -725,63 +712,12 @@ def fitness_f03(fc):
 
 
 def pool_f06(fc):
-    Fz = fc.Fz
-    P = (8.0, 2.4, 28.0, 6.4)                    # 20 m x 4 m lap pool
-    deck = (6.0, 0.6, 30.0, 8.6)
-    holes = core_holes(fc.n) + [deck]
-    fl = fc.sink("floor")
-    G.finish_floor(fl, "Floor_Stone", fc.slab_poly, holes, Fz + 0.005)
-    dpoly = G.clip_rect(fc.slab_poly, *deck)
-    G.finish_floor(fl, "Wood_Teak", dpoly, [P], Fz + 0.005)
-    # basin (below the slab, tiled), with entry steps at the west end
-    pl = fc.sink("pool")
-    t, zb = 0.25, Fz - 1.4
-    zf = Fz - 1.2
-    x0, y0, x1, y1 = P
-    pl.box("Pool_Tile", x0 - t, y0 - t, zb, x1 + t, y0, Fz)
-    pl.box("Pool_Tile", x0 - t, y1, zb, x1 + t, y1 + t, Fz)
-    pl.box("Pool_Tile", x0 - t, y0, zb, x0, y1, Fz)
-    pl.box("Pool_Tile", x1, y0, zb, x1 + t, y1, Fz)
-    pl.box("Pool_Tile", x0, y0, zb, x1, y1, zf)
-    nst = 7
-    r = 1.2 / nst
-    for i in range(1, nst):
-        pl.box("Pool_Tile", x0, y0, zf, x0 + i * 0.3, y0 + 1.3, Fz - i * r)
-    for yy in (3.4, 4.4, 5.4):
-        fc.sink("decor").box("Art_Blue", x0 + 2.2, yy - 0.08, zf, x1 - 0.5, yy + 0.08, zf + 0.004)
-    for e in ((x0 - t - 0.05, y0 - t - 0.05, x1 + t + 0.05, y0 - t + 0.25),
-              (x0 - t - 0.05, y1 + t - 0.25, x1 + t + 0.05, y1 + t + 0.05)):
-        fc.sink("decor").box("Marble_White", e[0], e[1], Fz, e[2], e[3], Fz + 0.02)
-    fc.sink("water").hface("Water_Pool", [(x0, y0), (x1, y0), (x1, y1), (x0, y1)], Fz - 0.12)
-    fc.sink("rail").beam("Metal_Dark", (x1 - 0.3, y1 - 0.2, Fz + 0.8), (x1 - 0.3, y1 - 0.2, Fz - 1.0), 0.05)
-    fc.block((x0 - 0.6, y0 - 0.6, x1 + 0.6, y1 + 0.6))
-    fc.block((13.0, 18.8, 29.0, 23.2))
-    for i in range(6):
-        fc.kit(fc.K.lounger(), (6.0, 7.0, 30.0, 8.6), (9.0 + i * 3.3, 7.8), rot=1, clear=0.25, step=0.2)
-    # hot tub (raised) east of the pool
-    ht = (33.0, 2.5, 36.0, 5.5)
-    pl.box("Pool_Tile", *ht[:2], Fz, *ht[2:], Fz + 0.55)
-    fc.sink("water").hface("Water_Pool", [(ht[0] + 0.15, ht[1] + 0.15), (ht[2] - 0.15, ht[1] + 0.15),
-                                          (ht[2] - 0.15, ht[3] - 0.15), (ht[0] + 0.15, ht[3] - 0.15)], Fz + 0.56)
-    fc.block(ht)
-    # sauna (teak box) north-west
-    sa = (1.5, 12.5, 7.0, 17.5)
-    fc.wall((sa[0], sa[1]), (sa[2], sa[1]), mat="Wood_Teak")
-    fc.wall((sa[0], sa[3]), (sa[2], sa[3]), mat="Wood_Teak")
-    fc.wall((sa[0], sa[1]), (sa[0], sa[3]), mat="Wood_Teak")
-    fc.wall((sa[2], sa[1]), (sa[2], sa[3]), openings=[(1.5, 2.5)], mat="Wood_Teak")
-    fc.sink("furniture").box("Wood_Teak", sa[0] + 0.1, sa[1] + 0.1, Fz, sa[0] + 0.7, sa[3] - 0.1, Fz + 0.45)
-    fc.block((sa[0] - 0.3, sa[1] - 0.3, sa[2] + 0.3, sa[3] + 0.3))
-    for pref in ((36, 15), (36, 22), (6, 22)):
-        fc.kit(fc.K.armchair_pair(), (-3, 9, 46, 30), pref, rot=0)
-    for pref in ((31, 1.5), (5, 2), (40, 20), (12, 26)):
-        fc.kit(fc.K.plant(), (pref[0] - 2, pref[1] - 2, pref[0] + 2, pref[1] + 2), pref, clear=0.2)
-    fc.light_grid(spacing=4.0, size=0.6, holes=[C.CORE])
+    AMEN.pool(fc)
 
 
 def amenity_f07(fc):
     Fz = fc.Fz
-    finish_default(fc, "Floor_Oak", extra_stone=[(14.0, 19.0, 28.0, 22.5)])
+    finish_default(fc, "Oak_Dark_Floor", extra_stone=[(14.0, 19.0, 28.0, 22.5)])
     fc.block((13.0, 18.8, 29.0, 22.8))
     # screening room (east)
     fc.wall((31.0, 8.0), (31.0, 18.0), openings=[(8.0, 9.1)])
@@ -790,14 +726,12 @@ def amenity_f07(fc):
     fc.sink("decor").box("Screen_White", 33.5, 8.08, Fz + 0.8, 41.5, 8.12, Fz + 3.0)
     fc.block((31.0, 8.0, 46.0, 9.6))
     fc.kit(fc.K.screening_rows(7.0, 3), (31.2, 9.6, 46, 18), (37.5, 13.6), rot=2, clear=0.2)
-    # library (west)
+    # private dining / wine room (west)
     fc.wall((11.0, 8.0), (11.0, 20.0), openings=[(10.0, 11.1)])
     fc.wall((11.0, 8.0), fc.to_edge((11.0, 8.0), (-1, 0)))
     fc.wall((11.0, 20.0), fc.to_edge((11.0, 20.0), (-1, 0)))
-    for pref, rot in (((4.0, 8.35), 0), ((8.0, 8.35), 0), ((4.0, 19.65), 2), ((8.0, 19.65), 2)):
-        fc.kit(fc.K.bookshelf(3.0, 2.6), (-3, 8.05, 11, 19.95), pref, rot=rot, clear=0.0, step=0.1)
-    fc.kit(fc.K.armchair_pair(), (-3, 9, 11, 19), (5, 12), rot=0, clear=0.3)
-    fc.kit(fc.K.armchair_pair(), (-3, 9, 11, 19), (5, 16), rot=2, clear=0.3)
+    AMEN.wine_room(fc)
+    fc.block((-3, 8.0, 11.0, 20.0))
     # dining + bar (north)
     fc.kit(fc.K.dining(5), (-3, 22.8, 46, 30), (16.5, 25.8), rot=0)
     fc.kit(fc.K.dining(4), (-3, 22.8, 46, 30), (25.5, 25.8), rot=0)
@@ -872,7 +806,7 @@ def residential(fc):
     n, Fz = fc.n, fc.Fz
     three = n % 3 != 0
     lobby = (14.0, 19.0, 28.0, 22.5)
-    finish_default(fc, "Floor_Oak", extra_stone=[lobby])
+    finish_default(fc, "Oak_Dark_Floor", extra_stone=[lobby])
     fc.block((14.0, 19.0, 28.0, 22.4))
     # lift lobby walls
     fc.wall((14.0, 19.0), (14.0, 22.5), openings=[(1.2, 2.2)])
@@ -919,10 +853,13 @@ def residential(fc):
     else:
         apt_rooms(fc, -1, (14.0, 22.6, 21.0, 31))
         apt_rooms(fc, +1, (21.0, 22.6, 28.0, 31))
-    fc.light_grid(spacing=4.2, size=0.5, holes=[C.CORE])
-    if n == 30:                                    # sample floor with real lights
-        for i, (x, y) in enumerate(((3, 16), (5, 23), (39, 16), (37, 23), (21, 26), (14, 5), (28, 5))):
-            fc.point_light("F30_Light_%d" % i, (x, y, fc.zc - 0.3), energy=120.0)
+    if fc.showcase:                                # sample floor: cove ceilings + real lights
+        APTS.apartment_ceiling(fc)
+        hang_art(fc, fc.art_faces, random.Random(n), zc=1.55, min_len=2.6)
+        for i, (x, y) in enumerate(((4, 17), (38, 17), (21, 26), (14, 5), (28, 5))):
+            fc.point_light("F%02d_Light_%d" % (n, i), (x, y, fc.zc - 0.4), 150.0, "AREA", 1.2)
+    else:
+        fc.light_grid(spacing=4.2, size=0.5, holes=[C.CORE])
 
 
 def full_floor(fc):
@@ -930,7 +867,7 @@ def full_floor(fc):
     n, Fz = fc.n, fc.Fz
     rng = fc.rng
     foyer = (18.5, 16.8, 25.5, 19.6)
-    finish_default(fc, "Floor_Oak", extra_stone=[foyer])
+    finish_default(fc, "Oak_Dark_Floor", extra_stone=[foyer])
     fc.block(foyer)
     if n == FIRST_SMALL:
         fc.block((14.0, 16.6, 26.0, 21.2))            # transfer route full -> compact stair
@@ -972,29 +909,18 @@ def full_floor(fc):
     fc.kit(fc.K.living_set(2.4), den, (10.0, 13.0), rot=1, clear=0.4)
     for pref in ((24.0, 27.5), (12.0, 22.0), (35.0, 12.0)):
         fc.kit(fc.K.plant(), (pref[0] - 2.5, pref[1] - 2.5, pref[0] + 2.5, pref[1] + 2.5), pref, clear=0.2)
-    fc.light_grid(spacing=3.8, size=0.5, holes=core_holes(n))
+    if fc.showcase:
+        APTS.apartment_ceiling(fc)
+        hang_art(fc, fc.art_faces, random.Random(n), zc=1.55, min_len=2.6)
+        for i, (x, y) in enumerate(((22.0, 24.0), (14.0, 12.0), (32.0, 12.0))):
+            if G.contains(fc.inner, x, y, 0.5):
+                fc.point_light("F%02d_Light_%d" % (n, i), (x, y, fc.zc - 0.4), 150.0, "AREA", 1.2)
+    else:
+        fc.light_grid(spacing=3.8, size=0.5, holes=core_holes(n))
 
 
 def penthouse(fc):
-    """Floor 77: open plan at the tip of the spire (no ceiling slab above;
-    the faceted spire glass rises over it)."""
-    Fz = fc.Fz
-    finish_default(fc, "Floor_Stone")
-    fc.block((18.5, 16.8, 25.5, 19.3))                          # lift / stair foyer
-    allr = (-5, 10.0, 50, 32)
-    fc.kit(fc.K.sofa(2.6), allr, (23.0, 20.2), rot=0, clear=0.25, step=0.1)
-    d, f = fc.sink("decor"), fc.sink("furniture")
-    fc.kit(fc.K.piano(), allr, (23.0, 23.6), rot=2, clear=0.2, step=0.1)
-    fc.kit(fc.K.dining(2), allr, (27.0, 13.2), rot=1, clear=0.2, step=0.1)
-    fc.kit(fc.K.bed(1.6, nightstands=False), allr, (17.9, 12.6), rot=0, clear=0.2, step=0.1)
-    for pref in ((16.6, 11.9), (28.6, 16.0), (21.0, 21.6), (25.0, 21.6)):
-        fc.kit(fc.K.plant(), (pref[0] - 1.2, pref[1] - 1.2, pref[0] + 1.2, pref[1] + 1.2), pref, clear=0.05,
-               step=0.1)
-    # floor lamps (emissive shades) instead of ceiling panels
-    for x, y in ((20.6, 20.0), (27.2, 17.6), (17.6, 16.0), (25.6, 20.0)):
-        if G.contains(fc.inner, x, y, 0.2):
-            d.box("Metal_Dark", x - 0.02, y - 0.02, Fz, x + 0.02, y + 0.02, Fz + 1.5)
-            d.box("Light_Emit", x - 0.2, y - 0.2, Fz + 1.5, x + 0.2, y + 0.2, Fz + 1.8)
+    APTS.penthouse(fc)
 
 
 # ---------------------------------------------------------------- build
@@ -1023,15 +949,22 @@ def build(ctx):
     total = 0
     nobj = 0
     nlights = 0
+    _LIGHT_COUNT[0] = 0
+    members = DT.prep_members(ctx.get("diagrid_members") if isinstance(ctx, dict) else None)
+    ncas = 0
     for n in range(1, C.NUM_FLOORS + 1):
         fc = FloorCtx(n, root)
         if n == 6:
-            fc.extra_holes = [(8.0, 2.4, 28.0, 6.4)]
+            fc.extra_holes = [AMEN.POOL]
         build_structure(fc)
+        if n in SHOWCASE:
+            fc.kit_lights = 6
+            HQ.reset(n * 31)
+        ncas += APTS.diagrid_casings(fc, members, skip=[(16.5, -1.0, 25.5, 2.0)] if n == 1 else None)
         floor_kind(n)(fc)
         total += fc.tris()
         nobj += len(fc.finish())
         nlights += len(fc.lights)
-    print("[interiors] floors=%d objects=%d lights=%d tris=%d time=%.1fs"
-          % (C.NUM_FLOORS, nobj, nlights, total, time.time() - t0))
+    print("[interiors] floors=%d objects=%d lights=%d tris=%d casings=%d (members=%d) time=%.1fs"
+          % (C.NUM_FLOORS, nobj, nlights, total, ncas, len(members), time.time() - t0))
     return {"tris": total}
