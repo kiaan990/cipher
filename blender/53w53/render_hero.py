@@ -47,30 +47,39 @@ def _z(n, add=EYE):
 # key: dict(name, cam=(loc, target, lens) | view=<camera name>, preset, key, ev,
 #           samples (multiplier of --samples), guiding, shift_y)
 def shots():
+    """Cameras coordinated with the exterior/interiors modules (floor z from
+    config at the time they were chosen). Interior shots can instead use
+    the automatic ray-cast camera picker: --auto-cams (keys with `auto`)."""
+    street = ((-14.0, -20.0, 1.6), (24.0, 6.0, 120.0), 18.0)
+    aerial = ((-420.0, -520.0, 420.0), (30.0, 40.0, 120.0), 35.0)
+    I = dict(samples=1.5, guiding=True, hl=16.0)   # interior defaults
     return {
-        "a": dict(name="street", cam=((-90.0, -19.0, EYE), (21.0, 14.0, 160.0), 24.0), shift_y=0.15,
-                  key=0.12, ev=0.0, samples=1.0),
-        "b": dict(name="aerial", cam=((-600.0, -820.0, 330.0), (20.0, 30.0, 175.0), 45.0),
-                  key=0.11, ev=0.0, samples=0.8),
-        "c": dict(name="aerial_dusk", cam=((-600.0, -820.0, 330.0), (20.0, 30.0, 175.0), 45.0),
-                  preset="dusk", fixed_ev=-1.6, samples=1.2),
-        # interiors: camera picked automatically by ray-cast scoring (render_cams)
-        # so it keeps working while the interior layouts change.
-        "d": dict(name="lobby", auto=(1, "deep", 18.0, math.radians(90)), key=0.18, wb=4300,
-                  samples=1.5, guiding=True),
-        "e": dict(name="pool", auto=(6, "water", 18.0, None), key=0.16, wb=4500, samples=1.5, guiding=True),
-        "f": dict(name="apartment_f30", auto=(30, "view", 20.0, math.radians(225)), key=0.20, wb=5000,
-                  samples=1.5, guiding=True),
-        "g": dict(name="penthouse_f77", auto=(77, "view", 18.0, math.radians(270)), key=0.20, wb=5000,
-                  samples=1.5, guiding=True),
-        "h": dict(name="street_dusk", cam=((-90.0, -19.0, EYE), (21.0, 14.0, 160.0), 24.0), shift_y=0.15,
-                  preset="dusk", fixed_ev=-1.2, samples=1.2),
+        "a": dict(name="street", cam=street, key=0.12, samples=1.0),
+        "b": dict(name="aerial", cam=aerial, key=0.11, samples=0.8),
+        "c": dict(name="aerial_dusk", cam=aerial, preset="dusk", fixed_ev=-1.6, samples=1.2),
+        "d": dict(name="lobby", cam=((40.0, 3.0, 1.9), (12.0, 18.0, 3.3), 16.0),
+                  auto=(1, "deep", 18.0, math.radians(90)), key=0.18, wb=4300, **I),
+        "e": dict(name="pool", cam=((33.5, 4.8, 30.7), (5.0, 4.5, 31.0), 16.0),
+                  auto=(6, "water", 18.0, None), key=0.16, wb=4500, **I),
+        "f": dict(name="apartment_f30", cam=((6.5, 23.0, 118.9), (6.0, 4.0, 118.3), 16.0),
+                  auto=(30, "view", 20.0, math.radians(225)), key=0.20, wb=5000, **I),
+        "g": dict(name="penthouse_f77", cam=((22.9, 25.2, 288.1), (23.0, 14.0, 287.9), 16.0),
+                  auto=(77, "view", 18.0, math.radians(270)), key=0.20, wb=5000, **I),
+        "h": dict(name="street_dusk", cam=street, preset="dusk", fixed_ev=-1.2, samples=1.2),
+        "i": dict(name="library", cam=((9.6, 21.5, 1.7), (3.8, 10.5, 1.6), 16.0), key=0.16, wb=4000, **I),
+        "j": dict(name="wine_room_f07", cam=((10.2, 18.7, 36.1), (5.0, 10.5, 35.8), 16.0), key=0.12,
+                  wb=3800, **I),
+        "k": dict(name="crown", cam=((5.0, 620.0, 110.0), (22.0, 16.0, 292.0), 200.0), key=0.12, samples=0.8),
+        "m": dict(name="crown_close", cam=((-60.0, 120.0, 300.0), (21.0, 14.0, 300.0), 50.0), key=0.12,
+                  samples=0.8),
+        "l": dict(name="lobby_entrance", cam=((21.0, 1.2, 1.6), (21.0, 12.0, 3.2), 18.0), key=0.18,
+                  wb=4300, **I),
     }
 
 
 def parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else sys.argv[1:]
-    a = dict(shots="a,b,c,d,e,f,g", res=(1600, 900), samples=256, preset="day",
+    a = dict(shots="a,b,c,d,e,f,g,i,k", res=(1600, 900), samples=256, preset="day",
              blend=os.path.join(OUT, "53W53.blend"), rebuild=False, auto=True, exr=False)
     i = 0
     while i < len(argv):
@@ -93,6 +102,8 @@ def parse_args():
             a["cam"] = [float(v) for v in argv[i + 1].split(",")]; i += 1
         elif k == "--tag":
             a["tag"] = argv[i + 1]; i += 1
+        elif k == "--auto-cams":
+            a["auto_cams"] = True
         elif k == "--no-guiding":
             a["no_guiding"] = True
         elif k == "--exr":
@@ -128,7 +139,7 @@ def camera(scene, spec):
     cd.clip_start, cd.clip_end = 0.05, 6000.0
     cd.sensor_width = 36.0
     cd.shift_x = cd.shift_y = 0.0
-    if "auto" in spec:
+    if "auto" in spec and (spec.get("auto_cams") or "cam" not in spec):
         from modules import render_cams
         floor, goal, lens, prefer = spec["auto"]
         res = render_cams.best_interior_cam(floor, goal, lens=lens, prefer=prefer)
@@ -212,7 +223,7 @@ def render_shot(scene, lighting, key, spec, args):
     if "fixed_ev" in spec:
         ev = spec["fixed_ev"]
     elif args["auto"]:
-        ev, la = auto_exposure(scene, spec.get("key", 0.18), HERO)
+        ev, la = auto_exposure(scene, spec.get("key", 0.18), HERO, spec.get("hl", 12.0))
         print(f"[hero] {key} auto-exposure: log-avg {la:.4f} -> {ev:+.2f} EV")
     scene.view_settings.exposure = ev + spec.get("ev", 0.0)
     name = f"{key}_{spec['name']}" + ("" if preset == "day" or "dusk" in spec["name"] else "_" + preset)
@@ -249,6 +260,7 @@ def main():
             print(f"[hero] unknown shot {key!r}; known: {', '.join(table)}")
             continue
         spec = dict(table[key])
+        spec["auto_cams"] = args.get("auto_cams", False)
         if args.get("cam"):
             c = args["cam"]
             spec.pop("view", None)

@@ -276,6 +276,12 @@ class T:
 
 
 def _base_color(mat):
+    # once processed, the authoring colour is kept in mat["pbr_base"]
+    # (our own node trees link Base Color, so its default value is meaningless)
+    if "pbr_base" in mat:
+        return tuple(mat["pbr_base"])
+    if mat.get("pbr_recipe"):
+        return tuple(mat.diffuse_color)
     try:
         bsdf = next((n for n in mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
         if bsdf is not None:
@@ -361,7 +367,11 @@ def r_concrete(t, base, rough=0.82, stain=0.25, pores=0.12, boardform=False):
 
 def r_wood(t, base, rough=0.45, plank_w=0.19, plank_l=2.2, coat=0.15, cerused=0.0, ring_scale=6.0):
     """Oak/walnut: planks (floors) or vertical panels (walls), grain via wave+noise."""
-    u, v, flo = t.facemap()
+    fu, fv, flo = t.facemap()
+    # floors: boards run along x, rows across y; walls: boards/panels run
+    # vertically (along z) with vertical seams every plank_w along the wall
+    u = t.mix(flo, fv, fu, kind="FLOAT")
+    v = t.mix(flo, fu, fv, kind="FLOAT")
     # plank index: rows across plank_w, staggered joints along plank_l
     row = t.math("FLOOR", t.math("DIVIDE", v, plank_w))
     off = t.math("MULTIPLY", t.white(t.comb(row, 0.0, 3.1)), plank_l)
@@ -852,6 +862,9 @@ def _eq(*keys):
 
 
 RULES = [
+    # crown louvres read near-black in photos: matte backing, dark anodised slats
+    (_has("louvre_backing"), r_generic, dict(rough=0.9, bump=0.05, amount=0.04, override=(0.03, 0.03, 0.032))),
+    (_has("louvre_metal"), r_metal, dict(rough=0.5, aniso=0.2, override=(0.08, 0.08, 0.085))),
     # --- exact-ish names that would otherwise be caught by broader patterns
     (_has("gold_leaf", "gilt", "gilded"), r_gold_leaf, {}),
     (_eq("glass_black", "black_glass"), r_lacquer, dict(rough=0.03, coat=1.0)),
@@ -915,7 +928,8 @@ RULES = [
     (_eq("concrete_diagrid"), r_concrete, dict(rough=0.6, stain=0.18, pores=0.06, boardform=False)),
     (_has("concrete", "slab", "core_wall", "cement", "plaster_raw"), r_concrete, dict(rough=0.82, stain=0.12)),
     # --- wood
-    (_has("cerused",), r_wood, dict(rough=0.55, plank_w=0.25, plank_l=2.8, coat=0.05, cerused=0.8)),
+    (_has("cerused",), r_wood, dict(rough=0.55, plank_w=0.6, plank_l=3.6, coat=0.05, cerused=0.8,
+                                    ring_scale=9.0)),
     (_has("oak_dark", "dark_floor"), r_wood, dict(rough=0.35, plank_w=0.22, plank_l=2.4, coat=0.3)),
     (_has("floor_oak", "floor_gallery", "parquet"), r_wood, dict(rough=0.4, plank_w=0.2, plank_l=2.2, coat=0.25)),
     (_has("walnut",), r_wood, dict(rough=0.35, plank_w=0.3, plank_l=2.4, coat=0.35, ring_scale=8.0)),
@@ -1029,18 +1043,28 @@ def _wrap_haze(t):
 
 
 def build_material(mat, force=False):
+    # materials hand-built and stamped by another module (e.g. interiors'
+    # coloured emitters, pbr_recipe="interiors_emissive") are never touched
+    rec = mat.get("pbr_recipe")
+    if rec is not None and not (str(rec).startswith("r_") or rec == "generic"):
+        return False
     if mat.get("pbr_version") == VERSION and not force:
         return False
     if mat.library is not None:
         return False
     base = _base_color(mat)
     base = (base[0], base[1], base[2], 1.0)
+    mat["pbr_base"] = list(base)
     fn, kw = recipe_for(mat.name)
     t = T(mat)
     if fn is None:
         r_generic(t, base, **_generic_for(base))
         kind = "generic"
     else:
+        kw = dict(kw)
+        ov = kw.pop("override", None)
+        if ov is not None:
+            base = (*ov[:3], 1.0)
         fn(t, base, **kw)
         kind = fn.__name__
     if kind not in ("r_thin_glass",):
