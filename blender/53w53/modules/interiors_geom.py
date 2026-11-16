@@ -110,6 +110,7 @@ class MultiMesh:
     def __init__(self):
         self.v, self.f, self.fm = [], [], []
         self.mats, self.mi = [], {}
+        self.smooth = set()          # indices of smooth-shaded faces
 
     def _m(self, name):
         i = self.mi.get(name)
@@ -181,6 +182,17 @@ class MultiMesh:
             self.f.append((b + i, b + j, b + 4 + j, b + 4 + i))
             self.fm.append(m)
 
+    def mesh(self, mat, verts, faces, smooth=False):
+        """Append an indexed mesh (shared vertices) with one material."""
+        m = self._m(mat)
+        b = len(self.v)
+        self.v += [tuple(p) for p in verts]
+        f0 = len(self.f)
+        self.f += [tuple(b + i for i in f) for f in faces]
+        self.fm += [m] * len(faces)
+        if smooth:
+            self.smooth.update(range(f0, len(self.f)))
+
     def tris(self):
         return sum(len(f) - 2 for f in self.f)
 
@@ -192,6 +204,11 @@ class MultiMesh:
         for mname in self.mats:
             me.materials.append(C.mat(mname))
         me.polygons.foreach_set("material_index", self.fm)
+        if self.smooth:
+            flags = [False] * len(self.f)
+            for i in self.smooth:
+                flags[i] = True
+            me.polygons.foreach_set("use_smooth", flags)
         me.validate(clean_customdata=False)
         me.update()
         ob = bpy.data.objects.new(name, me)

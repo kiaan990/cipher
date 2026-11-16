@@ -35,11 +35,25 @@ import time
 
 import bpy
 import config as C
+from modules import interiors_prims as PR
 from modules import interiors_geom as G
 from modules import interiors_kits as K
+from modules import interiors_furn as FU
+from modules import interiors_hq as HQ
 
-importlib.reload(G)
-importlib.reload(K)
+for _m in (PR, G, K, FU, HQ):
+    importlib.reload(_m)
+from modules import interiors_lobby as LOBBY      # noqa: E402
+from modules import interiors_amenity as AMEN     # noqa: E402
+from modules import interiors_apts as APTS        # noqa: E402
+for _m in (LOBBY, AMEN, APTS):
+    importlib.reload(_m)
+
+# Floors that get detailed furniture, real lights and finishes (the camera /
+# walkthrough looks here); every other floor stays lean for the GLB budget.
+SHOWCASE = {1, 2, 4, 5, 6, 7, 30, 65, C.PENTHOUSE_FLOOR}
+LIGHTS_MAX = 72                      # real lights in the whole interiors
+_LIGHT_COUNT = [0]
 
 WALL_T = 0.15
 DOOR_H = 2.25
@@ -51,6 +65,7 @@ SINKS = {
     "slab": True, "floor": False, "core": True, "stair": True, "rail": False,
     "lift": True, "walls": True, "glass_partitions": True, "furniture": True,
     "decor": False, "art": False, "lights": False, "pool": True, "water": False,
+    "casing": True, "ceiling": False, "millwork": True, "trim": False, "plants": False,
 }
 
 # ---------------------------------------------------------------- stairs
@@ -149,8 +164,38 @@ EXTRA_MATS = {
 }
 
 
+EMISSIVE = {
+    # name: (colour, strength)
+    "Fire_Glow": ((1.0, 0.42, 0.10, 1), 12.0),
+    "Light_Cove": ((1.0, 0.80, 0.58, 1), 9.0),
+    "Light_Skylight": ((0.86, 0.93, 1.0, 1), 5.0),
+    "Pool_Light": ((0.45, 0.82, 1.0, 1), 9.0),
+    "Light_Wine": ((1.0, 0.66, 0.36, 1), 5.0),
+    "Light_Downlight": ((1.0, 0.86, 0.68, 1), 14.0),
+}
+
+
+def emissive(name, rgba, strength):
+    m = bpy.data.materials.get(name)
+    if m is not None:
+        return m
+    m = C.mat(name, color=rgba)
+    b = m.node_tree.nodes.get("Principled BSDF") if m.node_tree else None
+    if b:
+        for key in ("Emission Color", "Emission"):
+            if key in b.inputs:
+                b.inputs[key].default_value = rgba
+                break
+        if "Emission Strength" in b.inputs:
+            b.inputs["Emission Strength"].default_value = strength
+    return m
+
+
 def ensure_materials():
-    for name, rgba in list(K.KIT_MATS.items()) + list(ART_MATS.items()) + list(EXTRA_MATS.items()):
+    for name, (rgba, st) in EMISSIVE.items():
+        emissive(name, rgba, st)
+    for name, rgba in (list(K.KIT_MATS.items()) + list(ART_MATS.items()) + list(EXTRA_MATS.items())
+                       + list(FU.FURN_MATS.items())):
         C.mat(name, color=rgba)
     m = bpy.data.materials.get("Glass_Partition")
     if m is None:
@@ -185,6 +230,10 @@ class FloorCtx:
         self.sinks = {}
         self.lights = []
         self.art_faces = []
+        self.showcase = n in SHOWCASE
+        self.K = HQ if self.showcase else K
+        self.kit_lights = 0              # how many kit lamps may become real lights
+        self.members = []                # exterior diagrid members (ctx), see interiors_apts
 
     def sink(self, name):
         mm = self.sinks.get(name)
@@ -222,12 +271,34 @@ class FloorCtx:
                 else:
                     self.block((pa[0] - dep, min(pa[1], pb[1]) - 0.1, pa[0] + dep, max(pa[1], pb[1]) + 0.1))
 
+    def _sinks(self):
+        return {"furn": self.sink("furniture"), "decor": self.sink("decor")}
+
+    def _emit(self, kit, cx, cy, ang):
+        if isinstance(kit, FU.Kit):
+            kit.emit(self._sinks(), cx, cy, self.Fz, ang)
+            for loc, e, kind, size, col in kit.world_lights(cx, cy, self.Fz, ang):
+                if self.kit_lights > 0:
+                    self.kit_lights -= 1
+                    self.point_light("F%02d_Lamp_%d" % (self.n, len(self.lights)), loc, e, kind, size, col)
+        else:
+            G.emit_kit(kit, cx, cy, int(round(ang / 90.0)) % 4, self.Fz, self._sinks())
+
     def kit(self, kit, room, pref, rot=0, clear=0.45, step=0.3):
         res = self.planner.place(kit, room, pref, rot, step, clear)
         if res:
-            G.emit_kit(kit, res[0], res[1], res[2], self.Fz,
-                       {"furn": self.sink("furniture"), "decor": self.sink("decor")})
+            self._emit(kit, res[0], res[1], res[2] * 90.0)
         return res
+
+    def put(self, kit, x, y, ang=0.0, block=True, pad=0.0):
+        """Place a kit at (x, y) rotated ang degrees (no planner search)."""
+        self._emit(kit, x, y, ang)
+        if block:
+            a = math.radians(ang)
+            hw, hd = kit.w / 2 + pad, kit.d / 2 + pad
+            ex = abs(hw * math.cos(a)) + abs(hd * math.sin(a))
+            ey = abs(hw * math.sin(a)) + abs(hd * math.cos(a))
+            self.block((x - ex, y - ey, x + ex, y + ey))
 
     def light_grid(self, spacing=4.2, size=0.5, holes=(), strip=None, poly=None):
         poly = poly or self.inner
@@ -257,8 +328,15 @@ class FloorCtx:
         self.col.objects.link(ob)
         return ob
 
-    def point_light(self, name, loc, energy=80.0, kind="POINT", size=0.3, color=(1.0, 0.9, 0.78)):
+    def point_light(self, name, loc, energy=80.0, kind="POINT", size=0.3, color=(1.0, 0.9, 0.78),
+                    rot=None, spot=None):
+        if _LIGHT_COUNT[0] >= LIGHTS_MAX:
+            return None
+        _LIGHT_COUNT[0] += 1
         ld = bpy.data.lights.new(name, kind)
+        if kind == "SPOT" and spot:
+            ld.spot_size = spot
+            ld.spot_blend = 0.4
         ld.energy = energy
         ld.color = color
         if kind == "AREA":
@@ -267,6 +345,8 @@ class FloorCtx:
             ld.shadow_soft_size = size
         ob = bpy.data.objects.new(name, ld)
         ob.location = loc
+        if rot is not None:
+            ob.rotation_euler = rot
         ob["floor"] = self.n
         ob["collide"] = False
         self.col.objects.link(ob)
@@ -529,12 +609,12 @@ def lobby_f01(fc):
     d.box("Leather_Tan", 33.8, 6.4, Fz, 34.3, 6.9, Fz + 0.5)
     fc.block((31.5, 4.5, 37.0, 8.5))
     # seating groups west, plants, benches
-    fc.kit(K.living_set(2.6), (-3, 1, 10.4, 9.5), (5, 5.5), rot=1)
-    fc.kit(K.living_set(2.4), (-3, 9.5, 10.4, 24), (4.5, 15.5), rot=1)
-    fc.kit(K.bench(3.0), (24.5, 1, 31.0, 8.5), (27.5, 3.0), rot=0, clear=0.3)
+    fc.kit(fc.K.living_set(2.6), (-3, 1, 10.4, 9.5), (5, 5.5), rot=1)
+    fc.kit(fc.K.living_set(2.4), (-3, 9.5, 10.4, 24), (4.5, 15.5), rot=1)
+    fc.kit(fc.K.bench(3.0), (24.5, 1, 31.0, 8.5), (27.5, 3.0), rot=0, clear=0.3)
     for p in ((17.5, 1.2), (24.6, 1.2), (2.0, 21.0), (40.0, 18.0), (30.5, 23.0), (11.0, 23.5)):
-        fc.kit(K.plant(), (p[0] - 1, p[1] - 1, p[0] + 1, p[1] + 1), p, clear=0.1)
-    fc.kit(K.living_set(2.4), (32, 9, 46, 23), (38, 15), rot=3)
+        fc.kit(fc.K.plant(), (p[0] - 1, p[1] - 1, p[0] + 1, p[1] + 1), p, clear=0.1)
+    fc.kit(fc.K.living_set(2.4), (32, 9, 46, 23), (38, 15), rot=3)
     # mailroom/package room enclosure (north-east)
     fc.wall((31.5, 24.0), (36.0, 24.0), openings=[(1.0, 2.2)], mat="Wood_Walnut")
     e = fc.to_edge((36.0, 24.0), (0.0, 1.0))
@@ -584,7 +664,7 @@ def gallery(fc):
     rooms = [(-3, 1, xw, 24), (xw, 0.6, xe, 9), (xe, 0.6, 46, 24), (-3, 24, 46, 30)]
     for r in rooms:
         cx, cy = (r[0] + r[2]) / 2, (r[1] + r[3]) / 2
-        fc.kit(K.bench(2.4), r, (cx, cy), rot=0 if (r[2] - r[0]) > (r[3] - r[1]) else 1, clear=1.0)
+        fc.kit(fc.K.bench(2.4), r, (cx, cy), rot=0 if (r[2] - r[0]) > (r[3] - r[1]) else 1, clear=1.0)
     for i in range(3):
         r = rooms[rng.randrange(len(rooms))]
         px, py = rng.uniform(r[0], r[2]), rng.uniform(r[1], r[3])
@@ -623,24 +703,24 @@ def fitness_f03(fc):
     fc.wall((33.0, 19.0), fc.to_edge((33.0, 19.0), (1, 0)))
     fc.wall((33.0, 10.0), fc.to_edge((33.0, 10.0), (1, 0)))
     for r, pref in (((33, 0.6, 46, 10), (38, 2)), ((33, 10, 46, 19), (39, 18))):
-        fc.kit(K.wardrobe(3.0), r, pref, rot=0, clear=0.2)
-        fc.kit(K.bench(2.4), r, (pref[0], (r[1] + r[3]) / 2), rot=0, clear=0.6)
+        fc.kit(fc.K.wardrobe(3.0), r, pref, rot=0, clear=0.2)
+        fc.kit(fc.K.bench(2.4), r, (pref[0], (r[1] + r[3]) / 2), rot=0, clear=0.6)
     # yoga studio behind glass (north)
     fc.wall((12.0, 24.0), (30.0, 24.0), openings=[(8.0, 9.2)], mat="Glass_Partition", sink="glass_partitions",
             th=0.06)
-    fc.kit(K.mat_row(5), (12, 24.2, 30, 30), (17, 26.5), rot=0, clear=0.3)
-    fc.kit(K.mat_row(5), (12, 24.2, 30, 30), (25, 26.5), rot=0, clear=0.3)
+    fc.kit(fc.K.mat_row(5), (12, 24.2, 30, 30), (17, 26.5), rot=0, clear=0.3)
+    fc.kit(fc.K.mat_row(5), (12, 24.2, 30, 30), (25, 26.5), rot=0, clear=0.3)
     # mirror wall on core west face
     fc.sink("decor").box("Glass_Curtain", 13.94, 9.5, Fz + 0.2, 14.0, 18.5, Fz + 2.6)
     # gym west
     for i in range(5):
-        fc.kit(K.treadmill(), (-3, 3, 9, 24), (1.5, 6 + i * 2.6), rot=1, clear=0.35, step=0.2)
+        fc.kit(fc.K.treadmill(), (-3, 3, 9, 24), (1.5, 6 + i * 2.6), rot=1, clear=0.35, step=0.2)
     for i in range(3):
-        fc.kit(K.weight_bench(), (3, 4, 12, 22), (8.5, 7 + i * 4.5), rot=1, clear=0.6)
+        fc.kit(fc.K.weight_bench(), (3, 4, 12, 22), (8.5, 7 + i * 4.5), rot=1, clear=0.6)
     # spa loungers south
     for i in range(6):
-        fc.kit(K.lounger(), (12, 0.6, 33, 8.6), (14 + i * 3.0, 4.5), rot=0, clear=0.4, step=0.2)
-    fc.kit(K.plant(), (30, 19, 46, 30), (34, 22))
+        fc.kit(fc.K.lounger(), (12, 0.6, 33, 8.6), (14 + i * 3.0, 4.5), rot=0, clear=0.4, step=0.2)
+    fc.kit(fc.K.plant(), (30, 19, 46, 30), (34, 22))
     fc.light_grid(spacing=4.0, size=0.6, holes=[C.CORE])
 
 
@@ -677,7 +757,7 @@ def pool_f06(fc):
     fc.block((x0 - 0.6, y0 - 0.6, x1 + 0.6, y1 + 0.6))
     fc.block((13.0, 18.8, 29.0, 23.2))
     for i in range(6):
-        fc.kit(K.lounger(), (6.0, 7.0, 30.0, 8.6), (9.0 + i * 3.3, 7.8), rot=1, clear=0.25, step=0.2)
+        fc.kit(fc.K.lounger(), (6.0, 7.0, 30.0, 8.6), (9.0 + i * 3.3, 7.8), rot=1, clear=0.25, step=0.2)
     # hot tub (raised) east of the pool
     ht = (33.0, 2.5, 36.0, 5.5)
     pl.box("Pool_Tile", *ht[:2], Fz, *ht[2:], Fz + 0.55)
@@ -693,9 +773,9 @@ def pool_f06(fc):
     fc.sink("furniture").box("Wood_Teak", sa[0] + 0.1, sa[1] + 0.1, Fz, sa[0] + 0.7, sa[3] - 0.1, Fz + 0.45)
     fc.block((sa[0] - 0.3, sa[1] - 0.3, sa[2] + 0.3, sa[3] + 0.3))
     for pref in ((36, 15), (36, 22), (6, 22)):
-        fc.kit(K.armchair_pair(), (-3, 9, 46, 30), pref, rot=0)
+        fc.kit(fc.K.armchair_pair(), (-3, 9, 46, 30), pref, rot=0)
     for pref in ((31, 1.5), (5, 2), (40, 20), (12, 26)):
-        fc.kit(K.plant(), (pref[0] - 2, pref[1] - 2, pref[0] + 2, pref[1] + 2), pref, clear=0.2)
+        fc.kit(fc.K.plant(), (pref[0] - 2, pref[1] - 2, pref[0] + 2, pref[1] + 2), pref, clear=0.2)
     fc.light_grid(spacing=4.0, size=0.6, holes=[C.CORE])
 
 
@@ -709,25 +789,25 @@ def amenity_f07(fc):
     fc.wall((31.0, 18.0), fc.to_edge((31.0, 18.0), (1, 0)))
     fc.sink("decor").box("Screen_White", 33.5, 8.08, Fz + 0.8, 41.5, 8.12, Fz + 3.0)
     fc.block((31.0, 8.0, 46.0, 9.6))
-    fc.kit(K.screening_rows(7.0, 3), (31.2, 9.6, 46, 18), (37.5, 13.6), rot=2, clear=0.2)
+    fc.kit(fc.K.screening_rows(7.0, 3), (31.2, 9.6, 46, 18), (37.5, 13.6), rot=2, clear=0.2)
     # library (west)
     fc.wall((11.0, 8.0), (11.0, 20.0), openings=[(10.0, 11.1)])
     fc.wall((11.0, 8.0), fc.to_edge((11.0, 8.0), (-1, 0)))
     fc.wall((11.0, 20.0), fc.to_edge((11.0, 20.0), (-1, 0)))
     for pref, rot in (((4.0, 8.35), 0), ((8.0, 8.35), 0), ((4.0, 19.65), 2), ((8.0, 19.65), 2)):
-        fc.kit(K.bookshelf(3.0, 2.6), (-3, 8.05, 11, 19.95), pref, rot=rot, clear=0.0, step=0.1)
-    fc.kit(K.armchair_pair(), (-3, 9, 11, 19), (5, 12), rot=0, clear=0.3)
-    fc.kit(K.armchair_pair(), (-3, 9, 11, 19), (5, 16), rot=2, clear=0.3)
+        fc.kit(fc.K.bookshelf(3.0, 2.6), (-3, 8.05, 11, 19.95), pref, rot=rot, clear=0.0, step=0.1)
+    fc.kit(fc.K.armchair_pair(), (-3, 9, 11, 19), (5, 12), rot=0, clear=0.3)
+    fc.kit(fc.K.armchair_pair(), (-3, 9, 11, 19), (5, 16), rot=2, clear=0.3)
     # dining + bar (north)
-    fc.kit(K.dining(5), (-3, 22.8, 46, 30), (16.5, 25.8), rot=0)
-    fc.kit(K.dining(4), (-3, 22.8, 46, 30), (25.5, 25.8), rot=0)
-    fc.kit(K.bar_counter(4.8), (29, 19, 46, 30), (36.0, 22.5), rot=0, clear=0.3)
+    fc.kit(fc.K.dining(5), (-3, 22.8, 46, 30), (16.5, 25.8), rot=0)
+    fc.kit(fc.K.dining(4), (-3, 22.8, 46, 30), (25.5, 25.8), rot=0)
+    fc.kit(fc.K.bar_counter(4.8), (29, 19, 46, 30), (36.0, 22.5), rot=0, clear=0.3)
     # lounge (south)
-    fc.kit(K.living_set(2.6), (-3, 0.6, 46, 8.6), (6.0, 4.5), rot=0)
-    fc.kit(K.living_set(2.6), (-3, 0.6, 46, 8.6), (21.0, 4.5), rot=0)
-    fc.kit(K.piano(), (-3, 0.6, 46, 8.6), (33.0, 4.5), rot=0)
+    fc.kit(fc.K.living_set(2.6), (-3, 0.6, 46, 8.6), (6.0, 4.5), rot=0)
+    fc.kit(fc.K.living_set(2.6), (-3, 0.6, 46, 8.6), (21.0, 4.5), rot=0)
+    fc.kit(fc.K.piano(), (-3, 0.6, 46, 8.6), (33.0, 4.5), rot=0)
     for pref in ((12, 1.5), (29, 1.5), (2, 22), (41, 26)):
-        fc.kit(K.plant(), (pref[0] - 2, pref[1] - 2, pref[0] + 2, pref[1] + 2), pref, clear=0.2)
+        fc.kit(fc.K.plant(), (pref[0] - 2, pref[1] - 2, pref[0] + 2, pref[1] + 2), pref, clear=0.2)
     fc.light_grid(spacing=4.0, size=0.6, holes=[C.CORE])
 
 
@@ -771,20 +851,20 @@ def apt_rooms(fc, side, region_north):
         bed2 = (21.0, -1, 34.5, 9.0)
         bed2_pref = (28.0 + rng.uniform(-2, 2), 7.9)
         liv_rot = 3
-    fc.kit(K.kitchen(3.6), kit_room, kit_pref, rot=kit_rot, clear=0.0, step=0.1)
-    fc.kit(K.living_set(rng.choice([2.4, 2.8])), living, liv_pref, rot=liv_rot)
-    fc.kit(K.dining(rng.choice([2, 3])), living, din_pref, rot=rng.choice([0, 1]))
+    fc.kit(fc.K.kitchen(3.6), kit_room, kit_pref, rot=kit_rot, clear=0.0, step=0.1)
+    fc.kit(fc.K.living_set(rng.choice([2.4, 2.8])), living, liv_pref, rot=liv_rot)
+    fc.kit(fc.K.dining(rng.choice([2, 3])), living, din_pref, rot=rng.choice([0, 1]))
     if region_north:
-        fc.kit(K.armchair_pair(), region_north, ((region_north[0] + region_north[2]) / 2, 25.0), rot=0)
-        fc.kit(K.desk(), region_north, ((region_north[0] + region_north[2]) / 2, 27.0), rot=2)
-    fc.kit(K.plant(), living, (liv_pref[0], 28.0), clear=0.2)
-    fc.kit(K.tv_wall(2.4), living, (liv_pref[0] - 2.5 * (1 if side < 0 else -1), liv_pref[1]),
+        fc.kit(fc.K.armchair_pair(), region_north, ((region_north[0] + region_north[2]) / 2, 25.0), rot=0)
+        fc.kit(fc.K.desk(), region_north, ((region_north[0] + region_north[2]) / 2, 27.0), rot=2)
+    fc.kit(fc.K.plant(), living, (liv_pref[0], 28.0), clear=0.2)
+    fc.kit(fc.K.tv_wall(2.4), living, (liv_pref[0] - 2.5 * (1 if side < 0 else -1), liv_pref[1]),
            rot=3 if side < 0 else 1, clear=0.3)
-    fc.kit(K.bed(1.8), bed1, bed1_pref, rot=2, clear=0.35, step=0.15)
-    fc.kit(K.wardrobe(2.0), bed1, (bed1_pref[0], 1.0), rot=2, clear=0.3)
-    fc.kit(K.bed(1.6), bed2, bed2_pref, rot=2, clear=0.35, step=0.15)
-    fc.kit(K.desk(), bed2, (bed2_pref[0] + 4.0 * (-side), 2.0), rot=0, clear=0.3)
-    fc.kit(K.wardrobe(2.0), bed2, (bed2_pref[0] - 4.5 * (-side), 2.0), rot=0, clear=0.3)
+    fc.kit(fc.K.bed(1.8), bed1, bed1_pref, rot=2, clear=0.35, step=0.15)
+    fc.kit(fc.K.wardrobe(2.0), bed1, (bed1_pref[0], 1.0), rot=2, clear=0.3)
+    fc.kit(fc.K.bed(1.6), bed2, bed2_pref, rot=2, clear=0.35, step=0.15)
+    fc.kit(fc.K.desk(), bed2, (bed2_pref[0] + 4.0 * (-side), 2.0), rot=0, clear=0.3)
+    fc.kit(fc.K.wardrobe(2.0), bed2, (bed2_pref[0] - 4.5 * (-side), 2.0), rot=0, clear=0.3)
 
 
 def residential(fc):
@@ -832,10 +912,10 @@ def residential(fc):
         if top and top[1] - 22.5 > 3.0:
             fc.wall((23.5, 22.5), top, openings=[(0.3, 1.4)], mat="Glass_Partition", sink="glass_partitions",
                     th=0.06)
-            fc.kit(K.bed(1.6, nightstands=False), (23.6, 22.6, 28.2, 31), (25.8, 23.8), rot=0, clear=0.15,
+            fc.kit(fc.K.bed(1.6, nightstands=False), (23.6, 22.6, 28.2, 31), (25.8, 23.8), rot=0, clear=0.15,
                    step=0.1)
-            fc.kit(K.kitchen(3.0), (14.1, 22.6, 23.4, 31), (16.0, 24.2), rot=0, clear=0.1, step=0.1)
-            fc.kit(K.sofa(2.0), (14.1, 22.6, 23.4, 31), (21.0, 26.0), rot=2, clear=0.2, step=0.15)
+            fc.kit(fc.K.kitchen(3.0), (14.1, 22.6, 23.4, 31), (16.0, 24.2), rot=0, clear=0.1, step=0.1)
+            fc.kit(fc.K.sofa(2.0), (14.1, 22.6, 23.4, 31), (21.0, 26.0), rot=2, clear=0.2, step=0.15)
     else:
         apt_rooms(fc, -1, (14.0, 22.6, 21.0, 31))
         apt_rooms(fc, +1, (21.0, 22.6, 28.0, 31))
@@ -863,35 +943,35 @@ def full_floor(fc):
         if ee and es and ee[0] - xe > 3.5:
             fc.wall((xe, 19.0), es)
             fc.wall((xe, 19.0), ee, openings=[(1.0, 2.0)])
-            fc.kit(K.bed(1.8), (xe, -1, 50, 19), (xe + 1.2, 14.0), rot=3, clear=0.3, step=0.15)
-            fc.kit(K.wardrobe(2.2), (xe, -1, 50, 19), (xe + 4.0, 18.6), rot=2, clear=0.3)
-            fc.kit(K.desk(), (xe, -1, 50, 19), (xe + 4.0, 9.0), rot=0, clear=0.3)
+            fc.kit(fc.K.bed(1.8), (xe, -1, 50, 19), (xe + 1.2, 14.0), rot=3, clear=0.3, step=0.15)
+            fc.kit(fc.K.wardrobe(2.2), (xe, -1, 50, 19), (xe + 4.0, 18.6), rot=2, clear=0.3)
+            fc.kit(fc.K.desk(), (xe, -1, 50, 19), (xe + 4.0, 9.0), rot=0, clear=0.3)
             parts = True
         we = fc.to_edge((xw, 19.0), (-1, 0))
         ws = fc.to_edge((xw, 19.0), (0, -1))
         if we and ws and xw - we[0] > 3.5:
             fc.wall((xw, 19.0), ws)
             fc.wall((xw, 19.0), we, openings=[(1.0, 2.0)])
-            fc.kit(K.bed(1.6), (-5, -1, xw, 19), (xw - 1.2, 14.0), rot=1, clear=0.3, step=0.15)
-            fc.kit(K.wardrobe(2.0), (-5, -1, xw, 19), (xw - 3.5, 18.6), rot=2, clear=0.3)
+            fc.kit(fc.K.bed(1.6), (-5, -1, xw, 19), (xw - 1.2, 14.0), rot=1, clear=0.3, step=0.15)
+            fc.kit(fc.K.wardrobe(2.0), (-5, -1, xw, 19), (xw - 3.5, 18.6), rot=2, clear=0.3)
     liv = (-5, 19.1, 50, 32)
-    fc.kit(K.living_set(rng.choice([2.6, 3.0])), liv, (21.5 + rng.uniform(-3, 3), 24.0), rot=0)
-    fc.kit(K.kitchen(3.6), liv, (xw - 1.5, 21.2), rot=0, clear=0.1, step=0.15)
-    fc.kit(K.dining(3), liv, (30.5, 21.8), rot=0)
+    fc.kit(fc.K.living_set(rng.choice([2.6, 3.0])), liv, (21.5 + rng.uniform(-3, 3), 24.0), rot=0)
+    fc.kit(fc.K.kitchen(3.6), liv, (xw - 1.5, 21.2), rot=0, clear=0.1, step=0.15)
+    fc.kit(fc.K.dining(3), liv, (30.5, 21.8), rot=0)
     if n % 3 == 0:
-        fc.kit(K.piano(), liv, (33.0, 24.0), rot=1)
-    fc.kit(K.bookshelf(2.4, 2.2), (17.0, 9.0, 19.0, 19.0), (17.9, 14.0), rot=3, clear=0.0, step=0.1)
+        fc.kit(fc.K.piano(), liv, (33.0, 24.0), rot=1)
+    fc.kit(fc.K.bookshelf(2.4, 2.2), (17.0, 9.0, 19.0, 19.0), (17.9, 14.0), rot=3, clear=0.0, step=0.1)
     if not parts:
-        fc.kit(K.bed(1.8), (-5, -1, 50, 19), (28.5, 13.0), rot=3, clear=0.3, step=0.15)
-        fc.kit(K.armchair_pair(), (-5, -1, 50, 19), (15.0, 13.0), rot=1, clear=0.3)
+        fc.kit(fc.K.bed(1.8), (-5, -1, 50, 19), (28.5, 13.0), rot=3, clear=0.3, step=0.15)
+        fc.kit(fc.K.armchair_pair(), (-5, -1, 50, 19), (15.0, 13.0), rot=1, clear=0.3)
     # den / study in the south-west part of the plate
     den = (-5, -1, 19.0, 16.8) if n != FIRST_SMALL else (-5, -1, 14.0, 19.0)
-    fc.kit(K.armchair_pair(), den, (11.0, 9.0), rot=0, clear=0.4)
-    fc.kit(K.desk(), (-5, -1, 27.0, 11.8), (22.0, 9.0), rot=0, clear=0.4)
-    fc.kit(K.bookshelf(2.4, 2.2), den, (9.0, 6.5), rot=0, clear=0.3)
-    fc.kit(K.living_set(2.4), den, (10.0, 13.0), rot=1, clear=0.4)
+    fc.kit(fc.K.armchair_pair(), den, (11.0, 9.0), rot=0, clear=0.4)
+    fc.kit(fc.K.desk(), (-5, -1, 27.0, 11.8), (22.0, 9.0), rot=0, clear=0.4)
+    fc.kit(fc.K.bookshelf(2.4, 2.2), den, (9.0, 6.5), rot=0, clear=0.3)
+    fc.kit(fc.K.living_set(2.4), den, (10.0, 13.0), rot=1, clear=0.4)
     for pref in ((24.0, 27.5), (12.0, 22.0), (35.0, 12.0)):
-        fc.kit(K.plant(), (pref[0] - 2.5, pref[1] - 2.5, pref[0] + 2.5, pref[1] + 2.5), pref, clear=0.2)
+        fc.kit(fc.K.plant(), (pref[0] - 2.5, pref[1] - 2.5, pref[0] + 2.5, pref[1] + 2.5), pref, clear=0.2)
     fc.light_grid(spacing=3.8, size=0.5, holes=core_holes(n))
 
 
@@ -902,13 +982,13 @@ def penthouse(fc):
     finish_default(fc, "Floor_Stone")
     fc.block((18.5, 16.8, 25.5, 19.3))                          # lift / stair foyer
     allr = (-5, 10.0, 50, 32)
-    fc.kit(K.sofa(2.6), allr, (23.0, 20.2), rot=0, clear=0.25, step=0.1)
+    fc.kit(fc.K.sofa(2.6), allr, (23.0, 20.2), rot=0, clear=0.25, step=0.1)
     d, f = fc.sink("decor"), fc.sink("furniture")
-    fc.kit(K.piano(), allr, (23.0, 23.6), rot=2, clear=0.2, step=0.1)
-    fc.kit(K.dining(2), allr, (27.0, 13.2), rot=1, clear=0.2, step=0.1)
-    fc.kit(K.bed(1.6, nightstands=False), allr, (17.9, 12.6), rot=0, clear=0.2, step=0.1)
+    fc.kit(fc.K.piano(), allr, (23.0, 23.6), rot=2, clear=0.2, step=0.1)
+    fc.kit(fc.K.dining(2), allr, (27.0, 13.2), rot=1, clear=0.2, step=0.1)
+    fc.kit(fc.K.bed(1.6, nightstands=False), allr, (17.9, 12.6), rot=0, clear=0.2, step=0.1)
     for pref in ((16.6, 11.9), (28.6, 16.0), (21.0, 21.6), (25.0, 21.6)):
-        fc.kit(K.plant(), (pref[0] - 1.2, pref[1] - 1.2, pref[0] + 1.2, pref[1] + 1.2), pref, clear=0.05,
+        fc.kit(fc.K.plant(), (pref[0] - 1.2, pref[1] - 1.2, pref[0] + 1.2, pref[1] + 1.2), pref, clear=0.05,
                step=0.1)
     # floor lamps (emissive shades) instead of ceiling panels
     for x, y in ((20.6, 20.0), (27.2, 17.6), (17.6, 16.0), (25.6, 20.0)):
