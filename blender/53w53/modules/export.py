@@ -221,7 +221,58 @@ def export_glb(ctx):
     for f in files:
         print("[export] %s %s" % (f["file"], _mb(os.path.getsize(os.path.join(out, f["file"])))))
     print("[export] walkdata.json", os.path.getsize(jpath) // 1024, "KB")
+    make_artifact_bundle(out, files, data)
     return files
+
+
+def glb_to_gltf_json(glb_path):
+    """Convert a GLB to a self-contained glTF JSON (buffer as base64 data URI).
+
+    Web hosts that refuse .glb can still serve this as .json; three.js'
+    GLTFLoader parses either form, whatever the file extension.
+    """
+    import base64
+    import struct
+    with open(glb_path, "rb") as fh:
+        raw = fh.read()
+    magic, _ver, _length = struct.unpack_from("<III", raw, 0)
+    assert magic == 0x46546C67, "not a GLB"
+    off, doc, binchunk = 12, None, b""
+    while off < len(raw):
+        clen, ctype = struct.unpack_from("<II", raw, off)
+        chunk = raw[off + 8: off + 8 + clen]
+        if ctype == 0x4E4F534A:
+            doc = json.loads(chunk.decode("utf-8"))
+        elif ctype == 0x004E4942:
+            binchunk = chunk
+        off += 8 + clen
+    if doc.get("buffers"):
+        doc["buffers"][0]["uri"] = ("data:application/octet-stream;base64,"
+                                    + base64.b64encode(binchunk).decode("ascii"))
+    return doc
+
+
+def make_artifact_bundle(out, files, data):
+    """out/artifact/: index.html + walkdata.json + models as .json, ready to
+    publish where only web-safe file types are served."""
+    dest = os.path.join(out, "artifact")
+    os.makedirs(dest, exist_ok=True)
+    for old in os.listdir(dest):
+        os.remove(os.path.join(dest, old))
+    bundle = json.loads(json.dumps(data))
+    for f in bundle.get("files", []):
+        name = f["file"][:-4] + "_model.json"
+        doc = glb_to_gltf_json(os.path.join(out, f["file"]))
+        with open(os.path.join(dest, name), "w") as fh:
+            json.dump(doc, fh, separators=(",", ":"))
+        f["file"] = name
+        f["bytes"] = os.path.getsize(os.path.join(dest, name))
+    with open(os.path.join(dest, "walkdata.json"), "w") as fh:
+        json.dump(bundle, fh, separators=(",", ":"))
+    if os.path.isfile(os.path.join(WEB, "index.html")):
+        shutil.copy2(os.path.join(WEB, "index.html"), os.path.join(dest, "index.html"))
+    print("[export] artifact bundle:", ", ".join(
+        "%s %s" % (n, _mb(os.path.getsize(os.path.join(dest, n)))) for n in sorted(os.listdir(dest))))
 
 
 def _split(out, obs):

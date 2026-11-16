@@ -805,9 +805,9 @@ const clock = new THREE.Clock();
 function frame(dt) {
   if (W && octree) {
     update(dt);
-    if (mode === 'menu' && !started) {        // title backdrop: look up the tower from across 53rd St
-      camera.position.copy(toThree(-14, -20, 1.7));
-      camera.lookAt(toThree(22, 12, 125));
+    if (mode === 'menu' && !started) {        // title backdrop: the tower from above Midtown, south-west
+      camera.position.copy(toThree(-150, -230, 170));
+      camera.lookAt(toThree(21, 14, 165));
     } else if (mode !== 'orbit') {
       camera.position.set(player.end.x, player.end.y + RADIUS, player.end.z);
       camera.rotation.set(pitch, yaw, 0, 'YXZ');
