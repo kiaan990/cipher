@@ -15,7 +15,12 @@ an outward offset along N, so nothing ever enters the floor plates.
 
 Objects (all in collection "Exterior"):
   Ext_Glass, Ext_Mullions, Ext_Spandrels, Ext_PodiumPanels, Ext_Diagrid,
-  Ext_Louvres, Ext_RoofCap, Ext_Ledge, Ext_Canopy, Ext_Spire.
+  Ext_Louvres, Ext_RoofCap, Ext_Ledge, Ext_Canopy, Ext_CrownGrille.
+
+Above C.roof_z() (last occupied ceiling, ~290 m) the converging spire facets
+are replaced by two exterior-only crown blades (see _crown): a high west
+blade (~320 m) whose sloped top is a dark louvred grille, and a lower east
+peak (~307 m) with a light glazed lattice top, with a V-notch between them.
 Entrance opening (no geometry): x 19.4..22.6, y = 0, z 0..3.0.
 
 ctx["diagrid_members"]: one dict per structural member (diagonals, node-level
@@ -45,11 +50,10 @@ TRANSOM_W = 0.055
 DIA_OFF = 0.27            # diagrid centre (depth 0.42 -> 0.06..0.48): near-flush
 DIA_D = 0.42              # with the glass, as in photos of the finished tower
 RIDGE_OFF, RIDGE_W, RIDGE_D = 0.32, 1.05, 0.58
-# Colours measured from photos (overcast 2021/2023 shots): graphite diagrid,
-# grey-blue reflective glass, dark-bronze/graphite mullions.
-DIAGRID_RGBA = (0.115, 0.118, 0.122, 1.0)
+# Colours from daylight photos (57th St view): light-medium warm grey
+# architectural concrete diagrid, grey-blue reflective glass.
+DIAGRID_RGBA = (0.48, 0.47, 0.45, 1.0)
 GLASS_RGBA = (0.20, 0.27, 0.32, 1.0)
-LOUVRE_TOP = 309.0
 SEED = 5353
 
 
@@ -488,7 +492,7 @@ def build(ctx):
     panels = Acc("Ext_PodiumPanels", C.mat("Panel_Podium", color=(0.80, 0.78, 0.73, 1)), col)
     members = []
     dia = Acc("Ext_Diagrid", "Concrete_Diagrid", col, members)
-    _tint(C.mat("Concrete_Diagrid"), DIAGRID_RGBA, rough=0.6)
+    _tint(C.mat("Concrete_Diagrid"), DIAGRID_RGBA, rough=0.7)
     _tint(gm, GLASS_RGBA)
     louv = Acc("Ext_Louvres", C.mat("Louvre_Metal", color=(0.30, 0.31, 0.32, 1)), col)
 
@@ -601,21 +605,17 @@ def build(ctx):
                 _uv_bar(mull, g, (u, g.v_of_z(0)), (u, vd + 0.14), 0.14, 0.18, MULL_OFF)
             _uv_bar(mull, g, (DOOR_U[0] - 0.14, vd + 0.07), (DOOR_U[1] + 0.14, vd + 0.07), 0.14, 0.18, MULL_OFF)
 
-        # ---- louvres in the crown (above the last occupied floor)
-        z = roof + 0.6
-        while z < LOUVRE_TOP:
-            v0, v1 = g.v_of_z(z), g.v_of_z(z + 0.28)
-            for pc in g.pieces:
-                lp = _clip_box(pc, v0=v0, v1=v1)
-                if lp:
-                    _uv_poly(louv, g, lp, 0.12)
-            z += 0.75
-
         # ---- diagrid
         _diagrid(dia, g, grng, door_rect)
 
     # ---- ridge (edge) members
     for p, q, n in ridges:
+        clipped = False
+        if p.z >= roof - 0.05:
+            continue                     # above the roof: crown blades instead
+        if q.z > roof:
+            q = p.lerp(q, (roof - p.z) / (q.z - p.z))
+            clipped = True
         d = q - p
         if d.length < 0.3:
             continue
@@ -623,7 +623,7 @@ def build(ctx):
         dn = n.normalized()
         # extend slightly so ridge members meet at corners
         e = d.normalized() * 0.4
-        a, b = p - e, q + e
+        a, b = p - e, (q if clipped else q + e)
         if p.z < 0.01:
             a = p.copy()
         acc_off = dn * RIDGE_OFF
@@ -637,8 +637,8 @@ def build(ctx):
             _uv_bar(dia, g, (iv[0], vsp), (iv[1], vsp), 1.0, DIA_D, DIA_OFF, kind="tie")
 
     ctx["diagrid_members"] = members
-    # ---- objects
-    for acc in (glass, mull, spand, panels, dia, louv):
+    # ---- objects (glass, mullions, louvres, diagrid finish after the crown)
+    for acc in (spand, panels):
         acc.finish()
 
     roofm = C.mat("Roof_Membrane", color=(0.22, 0.22, 0.23, 1))
@@ -657,27 +657,10 @@ def build(ctx):
         can.add_beam((cx + sx, -2.3, CANOPY_Z[1]), (cx + sx, -0.05, 5.6), 0.06)
     can.finish()
 
-    # sharp tip: a small three-sided blade cap where the ridges converge (no
-    # antenna - the real crown ends in bare, knife-edged concrete points)
-    tip = V((C.SPIRE_TIP_X, C.SPIRE_TIP_Y, C.SPIRE_TIP_Z))
-    sp = C.MeshBuilder("Ext_Spire", C.mat("Concrete_Diagrid"), col)
-    top_r = [(p, q, n) for p, q, n in ridges if (q - tip).length < 1.0]
-    base = []
-    for p, q, n in top_r:
-        d = (q - p).normalized()
-        base.append(q - d * 4.0 + n.normalized() * (RIDGE_OFF + RIDGE_D * 0.5))
-    if len(base) >= 3:
-        apex = tip + V((0, 0, 1.6))
-        b0 = len(sp.verts)
-        sp.verts += [tuple(b) for b in base] + [tuple(apex)]
-        k = len(base)
-        cx = sum((b.x for b in base), 0.0) / k
-        cy = sum((b.y for b in base), 0.0) / k
-        order = sorted(range(k), key=lambda i: math.atan2(base[i].y - cy, base[i].x - cx))
-        for a, b in zip(order, order[1:] + order[:1]):
-            sp.faces.append((b0 + a, b0 + b, b0 + k))
-        sp.faces.append(tuple(b0 + i for i in reversed(order)))
-    sp.finish()
+    # two-peak crown above the last occupied floor (exterior-only)
+    _crown(col, roof, glass, mull, louv, dia, members)
+    for acc in (glass, mull, louv, dia):
+        acc.finish()
 
 
 def _tint(m, rgba, rough=None):
@@ -722,6 +705,10 @@ def _diagrid(acc, g, rng, door_rect):
         vs = [p[1] for p in pc]
         vmin, vmax = min(vs), max(vs)
         zmin, zmax = g.z_of_v(vmin), g.z_of_v(vmax)
+        zmax = min(zmax, C.roof_z())          # the crown blades take over above
+        if zmax - zmin < 1.0:
+            continue
+        vmax = g.v_of_z(zmax)
         rows_z = [zmin] + [z for z in levels if zmin + 2.5 < z < zmax - 2.5] + [zmax]
         rows = []
         for r, z in enumerate(rows_z):
@@ -806,3 +793,236 @@ def _zipper(lo, up):
             j += 1
         add(lo[i], up[j])
     return out
+
+
+# ----------------------------------------------------------------- crown
+# Heights (m) of the blade tops above each roof-section vertex.  The roof
+# section is a triangle: SW, SE on the 53rd St side and the N apex; it is
+# split by the N-S line through the apex into a WEST (high) and EAST (low)
+# blade.  Calibrated on the 57th St photo (crown_ref.jpg): high blade top
+# ~320 m sloping down to the north, lower peak ~307 m sloping into the notch.
+CROWN_W = {"SW": 309.5, "S1": 319.4, "S": 320.0, "N": 297.0}
+CROWN_E = {"SE": 307.0, "SE1": 306.4, "S": 297.5, "N": 296.0}
+CROWN_FLAT = 2.4      # length of the short, nearly level top edge of each peak
+CROWN_PANE_U, CROWN_PANE_V = 1.5, 1.8
+CROWN_TAPER = 0.5     # fraction of the shaft's taper carried into the blades
+
+
+def _crown_frame(pts):
+    """Group for a planar 3D polygon (outward = right-hand rule CCW)."""
+    nrm = V((0, 0, 0))
+    for i in range(len(pts)):
+        nrm += pts[i].cross(pts[(i + 1) % len(pts)])
+    nrm.normalize()
+    return Group("CR", nrm, nrm.dot(pts[0]), [pts])
+
+
+def _seg_in_poly(poly, P, Q):
+    """Clip segment PQ (uv) to a convex CCW polygon (Cyrus-Beck)."""
+    t0, t1 = 0.0, 1.0
+    du, dv = Q[0] - P[0], Q[1] - P[1]
+    n = len(poly)
+    for i in range(n):
+        a, b = poly[i], poly[(i + 1) % n]
+        ex, ey = b[0] - a[0], b[1] - a[1]
+        nx, ny = ey, -ex                      # outward normal of a CCW edge
+        num = nx * (P[0] - a[0]) + ny * (P[1] - a[1])
+        den = nx * du + ny * dv
+        if abs(den) < 1e-12:
+            if num > 0:
+                return None
+            continue
+        t = -num / den
+        if den < 0:
+            t0 = max(t0, t)
+        else:
+            t1 = min(t1, t)
+        if t0 >= t1:
+            return None
+    return (P[0] + du * t0, P[1] + dv * t0), (P[0] + du * t1, P[1] + dv * t1)
+
+
+def _crown_glass_face(g, glass, mull, prng, v_base):
+    """Vertical crown face: panes + mullions + transoms continuing the shaft."""
+    pc = g.pieces[0]
+    umin, umax = g.urange()
+    vs = [p[1] for p in pc]
+    us = []
+    u = umin + 0.75
+    while u < umax - 0.3:
+        us.append(u)
+        u += CROWN_PANE_U
+    vrows = []
+    v = v_base
+    while v < max(vs):
+        vrows.append(v)
+        v += CROWN_PANE_V
+    vrows.append(max(vs) + 0.01)
+    cuts = [umin - 1] + us + [umax + 1]
+    for va, vb in zip(vrows, vrows[1:]):
+        strip = _clip_box(pc, v0=va, v1=vb)
+        if not strip:
+            continue
+        for k in range(len(cuts) - 1):
+            cell = _clip_box(strip, u0=cuts[k], u1=cuts[k + 1])
+            if not cell:
+                continue
+            uc = sum(p[0] for p in cell) / len(cell)
+            vc = sum(p[1] for p in cell) / len(cell)
+            ta, tb = prng.uniform(-0.0045, 0.0045), prng.uniform(-0.0045, 0.0045)
+            glass.poly([g.p3(uu, vv, GLASS_OFF + 0.012 + ta * (uu - uc) + tb * (vv - vc)) for uu, vv in cell])
+    for u in us:
+        iv = _interval_u(pc, u)
+        if iv and iv[1] - iv[0] > 0.3:
+            _uv_bar(mull, g, (u, iv[0]), (u, iv[1]), MULL_W, MULL_D, MULL_OFF, caps=False)
+    for v in vrows[1:-1]:
+        iv = _interval_v(pc, v)
+        if iv and iv[1] - iv[0] > 0.3:
+            _uv_bar(mull, g, (iv[0], v), (iv[1], v), MULL_W, MULL_D, MULL_OFF, caps=False)
+
+
+def _crown(col, roof, glass, mull, louv, dia, members):
+    sec = C.section(roof)
+    if len(sec) != 3:
+        return
+    # identify N apex (max y) and the two south corners
+    n_i = max(range(3), key=lambda i: sec[i][1])
+    south = [sec[i] for i in range(3) if i != n_i]
+    sw, se = sorted(south, key=lambda p: p[0])
+    nx_, ny_ = sec[n_i]
+    # split point on the south edge directly below the apex
+    t = (nx_ - sw[0]) / (se[0] - sw[0])
+    sx, sy = nx_, sw[1] + t * (se[1] - sw[1])
+    P2 = {"SW": sw, "SE": se, "N": (nx_, ny_), "S": (sx, sy)}
+
+    # The blades keep tapering (at half the shaft's rate) by a z-dependent
+    # homothety about the spire axis; it maps planes to planes, so every
+    # blade face stays planar and the shared split wall stays shared.
+    cx, cy = C.SPIRE_TIP_X, C.SPIRE_TIP_Y
+    rate = CROWN_TAPER / max(1.0, C.SPIRE_TIP_Z - roof)
+
+    def pt(k, z):
+        f = 1.0 - rate * (z - roof)
+        return V((cx + (P2[k][0] - cx) * f, cy + (P2[k][1] - cy) * f, z))
+
+    grille = Acc("Ext_CrownGrille", C.mat("Louvre_Backing", color=(0.05, 0.055, 0.06, 1)), col)
+    prng = random.Random(9091)
+    edges = {}
+
+    def edge(a, b):
+        key = tuple(sorted((tuple(round(c, 2) for c in a), tuple(round(c, 2) for c in b))))
+        edges[key] = (a, b)
+
+    # extra points on the south edge, CROWN_FLAT m in from each blade's
+    # tip, so each peak ends in a short, nearly level edge (not a needle)
+    def on_south(a, b, dist):
+        L = math.hypot(b[0] - a[0], b[1] - a[1])
+        t = dist / L
+        return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+    P2["S1"] = on_south(P2["S"], P2["SW"], CROWN_FLAT)      # west of S
+    P2["SE1"] = on_south(P2["SE"], P2["S"], CROWN_FLAT)     # west of SE
+    HW, HE = CROWN_W, CROWN_E
+
+    def B(k):
+        return pt(k, roof)
+
+    def TW(k):
+        return pt(k, HW[k])
+
+    def TE(k):
+        return pt(k, HE[k])
+
+    blades = {
+        "W": {"cen": (B("SW") + B("S") + B("N")) / 3,
+              "sides": [[B("SW"), B("S"), TW("S"), TW("S1"), TW("SW")],
+                        [B("N"), B("SW"), TW("SW"), TW("N")]],
+              "tops": [[TW("SW"), TW("S1"), TW("N")], [TW("S1"), TW("S"), TW("N")]]},
+        "E": {"cen": (B("S") + B("SE") + B("N")) / 3,
+              "sides": [[B("S"), B("SE"), TE("SE"), TE("SE1"), TE("S")],
+                        [B("SE"), B("N"), TE("N"), TE("SE")]],
+              "tops": [[TE("S"), TE("SE1"), TE("N")], [TE("SE1"), TE("SE"), TE("N")]]},
+    }
+    # the V-notch wall: west blade's split face above the east blade's top
+    notch = [TE("S"), TE("N"), TW("N"), TW("S")]
+    if HW["N"] - HE["N"] < 0.05:
+        notch = [TE("S"), TE("N"), TW("S")]
+    blades["W"]["sides"].append(notch)
+
+    for tag, bl in blades.items():
+        cen = bl["cen"]
+        for fi, face in enumerate(bl["sides"]):
+            g = _crown_frame(face)
+            fc = sum(face, V((0, 0, 0))) / len(face)
+            if g.N.dot(fc - V((cen.x, cen.y, fc.z))) < 0:
+                face = list(reversed(face))
+                g = _crown_frame(face)
+            is_notch = face is notch or fi == 2
+            v_from = g.v_of_z(min(p.z for p in face))
+            _crown_glass_face(g, glass, mull, prng, v_from)
+            for a, b in zip(face, face[1:] + face[:1]):
+                if abs(a.z - roof) < 0.01 and abs(b.z - roof) < 0.01:
+                    continue
+                edge(a, b)
+            if not is_notch:
+                # one diagonal across each outer face (continuing the diagrid)
+                pc = g.pieces[0]
+                umin, umax = g.urange()
+                vb = g.v_of_z(roof)
+                lean = (tag == "W") == (fi == 0)
+                ua, ub = (umin + 0.8, umax - 0.8) if lean else (umax - 0.8, umin + 0.8)
+                iv = _interval_u(pc, ub)
+                if iv and iv[1] - vb > 6.0:
+                    _uv_bar(dia, g, (ua, vb), (ub, iv[1] - 0.8), _member_w(roof, prng), DIA_D,
+                            DIA_OFF, kind="crown")
+        for tf in bl["tops"]:
+            g = _crown_frame(tf)
+            if g.N.z < 0:
+                tf = list(reversed(tf))
+                g = _crown_frame(tf)
+            pc = g.pieces[0]
+            umin, umax = g.urange()
+            vs = [p[1] for p in pc]
+            for a, b in zip(tf, tf[1:] + tf[:1]):
+                edge(a, b)
+            if tag == "W":
+                # dark louvred grille: backing + slats across the slope
+                _uv_poly(grille, g, pc, 0.03)
+                v = min(vs) + 0.35
+                while v < max(vs) - 0.2:
+                    iv = _interval_v(pc, v)
+                    if iv and iv[1] - iv[0] > 0.4:
+                        _uv_bar(louv, g, (iv[0] + 0.1, v), (iv[1] - 0.1, v), 0.32, 0.10, 0.16, caps=False)
+                    v += 0.55
+            else:
+                # light glazed lattice: glass with a diamond grid of light members
+                _uv_poly(glass, g, pc, GLASS_OFF + 0.01)
+                span = (umax - umin) + (max(vs) - min(vs))
+                k = -span
+                while k < span:
+                    for sgn in (1, -1):
+                        P = (umin + k, min(vs) - 0.01)
+                        Q = (umin + k + sgn * span * 2, min(vs) + span * 2)
+                        seg = _seg_in_poly(pc, P, Q)
+                        if seg and math.hypot(seg[1][0] - seg[0][0], seg[1][1] - seg[0][1]) > 0.4:
+                            _uv_bar(mull, g, seg[0], seg[1], 0.09, 0.12, 0.08, caps=False)
+                    k += 1.6
+    # edge members along every crown edge (continuing the shaft's ridges)
+    for a, b in edges.values():
+        d = b - a
+        if d.length < 0.3:
+            continue
+        mid = (a + b) * 0.5
+        cen = V((P2["N"][0] * 0.4 + P2["S"][0] * 0.6, (P2["N"][1] + P2["S"][1]) / 2, mid.z))
+        n = mid - cen
+        dn = d.normalized()
+        n = (n - dn * n.dot(dn))
+        if n.length < 1e-4:
+            continue
+        n.normalize()
+        side = d.cross(n).normalized()
+        w = RIDGE_W * 0.8
+        off = n * (RIDGE_OFF * 0.8)
+        dia.bar(a + off, b + off, side, n, w, RIDGE_D * 0.8)
+        members.append({"p0": tuple(a + off), "p1": tuple(b + off), "width": w, "depth": RIDGE_D * 0.8,
+                        "facet_normal": tuple(n), "kind": "crown", "facet": "crown"})
+    grille.finish()
