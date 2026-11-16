@@ -3,8 +3,6 @@ import math
 from modules.site_kit import (building, facade_bands, facade_piers, rect, edge_normal,
                               ico_vf, xz_prism_vf)
 
-COLORS_EXTRA = {"Pool_Dark": (0.10, 0.20, 0.24, 1)}
-
 
 # ---------------------------------------------------------------- wall helpers
 def wall_ngon(kit, mat, face, c, pts, off=0.04, group="Bldg"):
@@ -67,8 +65,8 @@ def octagon_down(kit, mat, cx, cy, z, r, n=8):
 # ---------------------------------------------------------------- trees
 def tree(kit, x, y, h=7.5, r=2.4, pit=True, seed=0.0):
     kit.cyl("Bark", x, y, 0.0, h * 0.55, 0.16, 0.11, n=6, group="Trees", collide=True)
-    v, f = ico_vf()
-    for (dx, dy, dz, s) in ((0, 0, 0.72, 1.0), (0.35 * math.cos(seed), 0.35 * math.sin(seed), 0.88, 0.7)):
+    for lvl, (dx, dy, dz, s) in ((1, (0, 0, 0.72, 1.0)), (0, (0.35 * math.cos(seed), 0.35 * math.sin(seed), 0.88, 0.7))):
+        v, f = ico_vf(lvl)
         cx, cy, cz = x + dx * r, y + dy * r, h * dz
         vv = [(cx + p[0] * r * s, cy + p[1] * r * s, cz + p[2] * r * s * 0.8) for p in v]
         kit.b("Foliage", "Trees", False).extend(vv, f)
@@ -81,10 +79,10 @@ def moma(kit):
     # --- 2019 Diller Scofidio + Renfro Geffen Wing, flush against the tower's
     # east wall (follows its slanted edge, 0.5 m clear), west wall x = 46.51
     poly = [(42.51, 0.0), (62.0, 0.0), (62.0, 32.0), (46.51, 32.0), (46.51, 22.0)]
-    kit.prism("Glass_Blue", poly, 0.0, 34.0)
+    kit.prism("Glass_Blue", poly, 0.0, 33.0)
     facade_bands(kit, poly, 7.0, 34.0, "MoMA_Charcoal", 0.04, 4.7, 5.5, 5.5)   # slab edges
     facade_piers(kit, poly, 0.0, 33.0, "MoMA_Charcoal", 0.06, 1.6, 0.14, edges=[0, 1])
-    kit.box("MoMA_Charcoal", 42.6, -0.4, 33.0, 62.0, 32.0, 34.6)              # parapet
+    kit.prism("MoMA_Charcoal", poly, 33.0, 34.6)                              # parapet
     wall_rect(kit, "Marble_White", "S", 0.0, 50.0, 61.0, 7.6, 8.4, off=0.08)   # signage band
     # --- Taniguchi (2004) gallery building: charcoal frame, big glazed panel
     p = rect(62.0, 0.0, 100.0, 24.0)
@@ -132,8 +130,7 @@ def moma(kit):
         a = math.pi * k / 8
         arc.append((109.0 + 6.0 * math.cos(math.pi - a), 2.6 - 4.2 * math.sin(a) - 0.2))
     arc += [(115.0, 2.6)]
-    arc = arc[:1] + [p for p in arc[1:-1]] + arc[-1:]
-    kit.prism("Marble_White", [arc[0]] + arc[1:-1][::1] + [arc[-1]], 4.3, 4.7, bottom=True)
+    kit.prism("Marble_White", arc, 4.3, 4.7, bottom=True)
     # vertical museum sign blade
     kit.box("MoMA_Charcoal", 99.7, -1.2, 6.0, 100.0, 0.0, 20.0)
     # --- Philip Johnson 1964 east wing: black steel grid on dark glass

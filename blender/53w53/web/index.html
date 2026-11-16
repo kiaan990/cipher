@@ -1,0 +1,792 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>53W53 Walkthrough</title>
+<meta name="description" content="First-person walkthrough of an interpretive model of 53 West 53 (Jean Nouvel's MoMA Expansion Tower).">
+<style>
+  :root {
+    --bg: #0d0f12;
+    --panel: rgba(14, 16, 20, 0.78);
+    --panel-solid: #14171c;
+    --line: rgba(255, 255, 255, 0.12);
+    --text: #e9ebee;
+    --muted: #9aa1ab;
+    --accent: #e8c27a;
+    --accent-ink: #1b1508;
+    --glass: #7fb3c9;
+    --core: #59606b;
+    --stair: #b08850;
+    --danger: #ff8a80;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
+    font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  canvas#view { display: block; width: 100vw; height: 100vh; touch-action: none; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+  .hidden { display: none !important; }
+  button { font: inherit; color: var(--text); background: rgba(255,255,255,0.06); border: 1px solid var(--line);
+    border-radius: 8px; padding: 8px 14px; cursor: pointer; }
+  button:hover { background: rgba(255,255,255,0.12); }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
+  button.primary:hover { filter: brightness(1.08); }
+  kbd { display: inline-block; min-width: 1.6em; padding: 0 5px; border: 1px solid var(--line); border-bottom-width: 2px;
+    border-radius: 4px; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: center; color: var(--text); }
+
+  /* HUD */
+  #hud { position: fixed; left: 16px; top: 16px; padding: 10px 14px; min-width: 190px; pointer-events: none; }
+  #hud .eyebrow { font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+  #hud .floor { font-size: 26px; font-weight: 650; letter-spacing: -.01em; margin-top: 2px; }
+  #hud .meta { color: var(--muted); font-variant-numeric: tabular-nums; }
+  #hud .mode { display: inline-block; margin-top: 6px; font-size: 11px; padding: 1px 7px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--accent); }
+  #mapwrap { position: fixed; right: 16px; top: 16px; padding: 8px; pointer-events: none; }
+  #minimap { display: block; width: 190px; height: 150px; }
+  #hint { position: fixed; left: 16px; bottom: 16px; padding: 10px 14px; color: var(--muted); font-size: 12.5px; max-width: 560px; }
+  #hint span { white-space: nowrap; margin-right: 10px; }
+  #prompt { position: fixed; left: 50%; bottom: 72px; transform: translateX(-50%); padding: 8px 14px; pointer-events: none; }
+  #crosshair { position: fixed; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px 0 0 -3px; border-radius: 50%;
+    background: rgba(255,255,255,0.7); box-shadow: 0 0 0 1px rgba(0,0,0,.35); pointer-events: none; }
+  #orbitbar { position: fixed; right: 16px; bottom: 16px; display: flex; gap: 8px; }
+
+  /* Start / pause overlay */
+  #overlay { position: fixed; inset: 0; display: grid; place-items: center; padding: 16px;
+    background: radial-gradient(ellipse at 50% 30%, rgba(13,15,18,.35), rgba(13,15,18,.85)); }
+  #card { width: min(520px, 100%); padding: 26px 26px 22px; }
+  #card h1 { margin: 0; font-size: 30px; letter-spacing: -.02em; font-weight: 700; }
+  #card .sub { color: var(--muted); margin: 4px 0 18px; }
+  #card .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+  #card ul { margin: 14px 0 0; padding: 0; list-style: none; display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px;
+    color: var(--muted); font-size: 13px; }
+  #mobile-note { margin-top: 14px; color: var(--accent); font-size: 13px; }
+  .bar { height: 6px; border-radius: 999px; background: rgba(255,255,255,.08); overflow: hidden; }
+  .bar > i { display: block; height: 100%; width: 0%; background: var(--accent); transition: width .15s; }
+  #loadtext { margin-top: 6px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  #error { color: var(--danger); margin-top: 10px; font-size: 13px; }
+
+  /* Lift picker */
+  #lift { position: fixed; inset: 0; display: grid; place-items: center; padding: 16px; background: rgba(8,9,11,.55); }
+  #liftcard { width: min(640px, 100%); max-height: calc(100vh - 32px); overflow: auto; padding: 18px 20px 20px; background: var(--panel-solid); }
+  #liftcard header { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+  #liftcard h2 { margin: 0; font-size: 18px; }
+  #stops { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
+  #stops button { padding: 7px 11px; }
+  #stops button b { color: var(--accent); margin-right: 6px; font-variant-numeric: tabular-nums; }
+  #floors { display: grid; grid-template-columns: repeat(auto-fill, minmax(46px, 1fr)); gap: 6px; }
+  #floors button { padding: 7px 0; font-variant-numeric: tabular-nums; }
+  #floors button.cur { outline: 2px solid var(--accent); }
+  #fade { position: fixed; inset: 0; background: #000; opacity: 0; pointer-events: none; transition: opacity .28s ease; }
+  #fade.on { opacity: 1; }
+  @media (max-width: 640px) {
+    #minimap { width: 130px; height: 104px; }
+    #hint { display: none; }
+    #hud .floor { font-size: 21px; }
+    #card ul { grid-template-columns: 1fr; }
+  }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<canvas id="view"></canvas>
+
+<div id="hud" class="panel hidden">
+  <div class="eyebrow">53 West 53</div>
+  <div class="floor" id="hud-floor">W 53rd St</div>
+  <div class="meta" id="hud-meta">0.0 m · 0 ft</div>
+  <div class="mode" id="hud-mode">Walk</div>
+</div>
+<div id="mapwrap" class="panel hidden"><canvas id="minimap" width="380" height="300"></canvas></div>
+<div id="prompt" class="panel hidden"></div>
+<div id="crosshair" class="hidden"></div>
+<div id="hint" class="panel hidden">
+  <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move</span>
+  <span><kbd>Shift</kbd> run</span>
+  <span><kbd>Space</kbd> jump</span>
+  <span><kbd>E</kbd> lift (in lobby)</span>
+  <span><kbd>L</kbd> call lift</span>
+  <span><kbd>F</kbd> fly</span>
+  <span><kbd>O</kbd> orbit</span>
+  <span><kbd>H</kbd> hide help</span>
+  <span><kbd>Esc</kbd> pause</span>
+</div>
+<div id="orbitbar" class="hidden">
+  <button id="btn-orbit-walk" class="primary">Walk in</button>
+</div>
+
+<div id="overlay">
+  <div id="card" class="panel">
+    <h1>53 West 53</h1>
+    <div class="sub">Jean Nouvel's MoMA Expansion Tower, Midtown Manhattan · 320 m · 77 floors. An interpretive procedural model.</div>
+    <div id="loading">
+      <div class="bar"><i id="loadbar"></i></div>
+      <div id="loadtext">Loading model…</div>
+    </div>
+    <div id="error" class="hidden"></div>
+    <div class="row">
+      <button id="btn-walk" class="primary" disabled>Walk in</button>
+      <button id="btn-orbit" disabled>Orbit view</button>
+    </div>
+    <ul>
+      <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> + mouse: walk</li>
+      <li><kbd>Shift</kbd> run · <kbd>Space</kbd> jump</li>
+      <li><kbd>E</kbd> near the lifts: pick a floor</li>
+      <li><kbd>L</kbd> call the lift from anywhere</li>
+      <li><kbd>F</kbd> fly mode (<kbd>Space</kbd>/<kbd>C</kbd> up/down)</li>
+      <li><kbd>Esc</kbd> pause · <kbd>O</kbd> orbit view</li>
+    </ul>
+    <div id="mobile-note" class="hidden">Walking needs a keyboard and mouse. On this device you can explore the orbit view.</div>
+  </div>
+</div>
+
+<div id="lift" class="hidden">
+  <div id="liftcard" class="panel">
+    <header><h2>Lift</h2><button id="lift-close">Close <kbd>Esc</kbd></button></header>
+    <div id="stops"></div>
+    <div id="floors"></div>
+  </div>
+</div>
+<div id="fade"></div>
+
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { Octree } from 'three/addons/math/Octree.js';
+import { Capsule } from 'three/addons/math/Capsule.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+// ---------------------------------------------------------------- constants
+// Blender plan (x east, y north, z up)  ->  three (x, z, -y)
+const toThree = (x, y, z) => new THREE.Vector3(x, z, -y);
+const EYE = 1.65, RADIUS = 0.3;
+const WALK_SPEED = 1.9, RUN_SPEED = 4.6, FLY_SPEED = 14, FLY_FAST = 60;
+const GRAVITY = 18, JUMP = 4.6, STEP_UP = 0.42;
+const SUBSTEPS = 5;
+const SKY_TOP = new THREE.Color(0x6f9fd6), SKY_HORIZON = new THREE.Color(0xd9e4ee);
+const $ = (id) => document.getElementById(id);
+const isTouchOnly = matchMedia('(hover: none) and (pointer: coarse)').matches;
+
+// ---------------------------------------------------------------- renderer
+const canvas = $('view');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+const scene = new THREE.Scene();
+scene.background = skyTexture();
+scene.fog = new THREE.Fog(SKY_HORIZON, 600, 3200);
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+scene.environmentIntensity = 0.45;
+
+const camera = new THREE.PerspectiveCamera(72, innerWidth / innerHeight, 0.05, 6000);
+camera.rotation.order = 'YXZ';
+scene.add(new THREE.HemisphereLight(0xdfeaff, 0x6b6257, 1.6));
+const sun = new THREE.DirectionalLight(0xfff1dc, 2.2);
+sun.position.copy(toThree(-300, -500, 700));
+scene.add(sun);
+
+function skyTexture() {
+  const c = document.createElement('canvas'); c.width = 2; c.height = 256;
+  const g = c.getContext('2d'), grad = g.createLinearGradient(0, 0, 0, 256);
+  grad.addColorStop(0, '#' + SKY_TOP.getHexString());
+  grad.addColorStop(0.75, '#' + SKY_HORIZON.getHexString());
+  grad.addColorStop(1, '#c9ced2');
+  g.fillStyle = grad; g.fillRect(0, 0, 2, 256);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+// ---------------------------------------------------------------- state
+let W = null;                       // walkdata.json
+let base = './';                    // folder holding the glb + json
+const byFloor = new Map();          // floor -> collidable meshes
+const siteMeshes = [];              // collidable site meshes (floor 0)
+const octrees = new Map();          // cache: floor -> Octree (floor ±1 + site)
+let octree = null, octreeFloor = -1;
+const player = new Capsule(new THREE.Vector3(0, RADIUS, 0), new THREE.Vector3(0, EYE - RADIUS, 0), RADIUS);
+const velocity = new THREE.Vector3();
+let onFloor = false, yaw = 0, pitch = 0;
+let mode = 'menu';                  // menu | walk | fly | orbit | lift
+let flying = false;
+const keys = new Set();
+let orbit = null;
+let currentFloor = 1, outdoors = true;
+let showHelp = true;
+
+// ---------------------------------------------------------------- loading
+async function fetchJSON() {
+  for (const b of ['./', '../out/']) {
+    try {
+      const r = await fetch(b + 'walkdata.json');
+      if (r.ok) { base = b; return await r.json(); }
+    } catch (e) { /* try next */ }
+  }
+  throw new Error('walkdata.json not found next to this page (or in ../out/).');
+}
+
+function setProgress(frac, text) {
+  $('loadbar').style.width = (100 * Math.max(0, Math.min(1, frac))).toFixed(1) + '%';
+  if (text) $('loadtext').textContent = text;
+}
+
+function loadGLB(url, expectedBytes, onProg) {
+  return new Promise((resolve, reject) => {
+    new GLTFLoader().load(url, resolve, (e) => {
+      const total = e.total || expectedBytes || 1;
+      onProg(e.loaded, total);
+    }, reject);
+  });
+}
+
+async function boot() {
+  try {
+    W = await fetchJSON();
+    const files = W.files || [{ file: '53W53.glb' }];
+    const total = files.reduce((s, f) => s + (f.bytes || 8e6), 0);
+    let done = 0;
+    const main = files[0];
+    const gltf = await loadGLB(base + main.file, main.bytes, (l, t) =>
+      setProgress((done + l) / total, `Loading model… ${(l / 1048576).toFixed(1)} / ${(t / 1048576).toFixed(1)} MB`));
+    done += main.bytes || 0;
+    addModel(gltf.scene);
+    setProgress(done / total, 'Preparing materials…');
+    try { await renderer.compileAsync(scene, camera); } catch (e) { /* older drivers: compile on first draw */ }
+    setProgress(files.length > 1 ? done / total : 1, files.length > 1 ? 'Streaming upper floors…' : 'Ready');
+    ready();
+    for (const f of files.slice(1)) {          // stream remaining floor chunks
+      try {
+        const g = await loadGLB(base + f.file, f.bytes, (l) => setProgress((done + l) / total));
+        done += f.bytes || 0;
+        addModel(g.scene);
+        octrees.clear(); octreeFloor = -1;
+      } catch (e) { console.warn('chunk failed', f.file, e); }
+    }
+    setProgress(1, 'Ready');
+  } catch (err) {
+    console.error(err);
+    $('error').textContent = 'Could not load the model: ' + (err.message || err);
+    $('error').classList.remove('hidden');
+  }
+}
+
+function extrasOf(obj) {
+  for (let o = obj; o; o = o.parent) {
+    if (o.userData && (o.userData.floor !== undefined || o.userData.group !== undefined)) return o.userData;
+  }
+  return {};
+}
+
+function addModel(root) {
+  root.updateMatrixWorld(true);
+  root.traverse((o) => {
+    if (!o.isMesh) return;
+    const ex = extrasOf(o);
+    o.userData.floor = ex.floor ?? -1;
+    o.userData.group = ex.group ?? '';
+    o.userData.collide = !!ex.collide;
+    const noNormals = !o.geometry.getAttribute('normal');
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    for (const m of mats) fixMaterial(m, noNormals);
+    if (o.userData.collide) {
+      if (o.userData.group === 'Site' || o.userData.floor === 0) siteMeshes.push(o);
+      else if (o.userData.floor >= 1) {
+        if (!byFloor.has(o.userData.floor)) byFloor.set(o.userData.floor, []);
+        byFloor.get(o.userData.floor).push(o);
+      }
+    }
+  });
+  scene.add(root);
+}
+
+const fixed = new WeakSet();
+function fixMaterial(m, noNormals) {
+  if (!m || fixed.has(m)) return;
+  fixed.add(m);
+  if (noNormals) m.flatShading = true;
+  if (m.transmission > 0) {             // skip the costly transmission pass: plain see-through glass
+    m.transmission = 0;
+    m.transparent = true;
+    m.opacity = Math.min(m.opacity, 0.32);
+    m.roughness = Math.min(m.roughness, 0.1);
+    m.metalness = 0.0;
+  }
+  if (m.transparent) { m.depthWrite = false; m.side = THREE.DoubleSide; }
+  m.needsUpdate = true;
+}
+
+// ---------------------------------------------------------------- floors
+function floorAtZ(z) {                     // z = feet elevation (Blender metres)
+  const fl = W.floors;
+  let n = 1;
+  for (let i = 0; i < fl.length; i++) if (fl[i].z <= z + 0.6) n = fl[i].n;
+  return n;
+}
+const F = (n) => W.floors[Math.max(1, Math.min(W.num_floors, n)) - 1];
+
+function insidePoly(poly, x, y, grow = 0) {   // convex CCW polygon; grow>0 expands
+  for (let i = 0; i < poly.length; i++) {
+    const [ax, ay] = poly[i], [bx, by] = poly[(i + 1) % poly.length];
+    const ex = bx - ax, ey = by - ay, L = Math.hypot(ex, ey) || 1;
+    if ((ex * (y - ay) - ey * (x - ax)) / L < -grow) return false;
+  }
+  return true;
+}
+function nearestOnPoly(poly, x, y) {
+  let best = null, bd = Infinity;
+  for (let i = 0; i < poly.length; i++) {
+    const [ax, ay] = poly[i], [bx, by] = poly[(i + 1) % poly.length];
+    const ex = bx - ax, ey = by - ay;
+    const t = Math.max(0, Math.min(1, ((x - ax) * ex + (y - ay) * ey) / (ex * ex + ey * ey || 1)));
+    const px = ax + t * ex, py = ay + t * ey, d = (px - x) ** 2 + (py - y) ** 2;
+    if (d < bd) { bd = d; best = [px, py]; }
+  }
+  return best;
+}
+
+// Glass-facade rule: indoors you stay inside the floor plate; on the ground
+// floor you can only cross the facade through the entrance opening.
+function allowed(x, y, n, feetZ) {
+  const f = F(n);
+  if (insidePoly(f.plate, x, y)) return true;
+  if (n > 1 || feetZ > 3) return false;
+  const [ox0, ox1] = W.entrance.opening_x;
+  if (x > ox0 + RADIUS && x < ox1 - RADIUS && y > -1.2 && y < 1.6) return true;   // doorway
+  return !insidePoly(f.slab, x, y, RADIUS + 0.15);                                  // street
+}
+
+function constrainPlan(prevX, prevY) {
+  const feetZ = player.start.y - RADIUS;
+  const n = floorAtZ(feetZ);
+  const x = player.start.x, y = -player.start.z;
+  if (allowed(x, y, n, feetZ)) return;
+  let nx = prevX, ny = prevY;
+  if (allowed(x, prevY, n, feetZ)) { nx = x; ny = prevY; }
+  else if (allowed(prevX, y, n, feetZ)) { nx = prevX; ny = y; }
+  else if (!allowed(prevX, prevY, n, feetZ)) {      // e.g. just landed from fly mode
+    const p = nearestOnPoly(F(n).plate, x, y);
+    nx = p[0] + (centroid(F(n).plate)[0] - p[0]) * 0.05;
+    ny = p[1] + (centroid(F(n).plate)[1] - p[1]) * 0.05;
+  }
+  const dx = nx - x, dz = -(ny - y);
+  player.translate(new THREE.Vector3(dx, 0, dz));
+}
+function centroid(poly) {
+  let x = 0, y = 0; for (const p of poly) { x += p[0]; y += p[1]; }
+  return [x / poly.length, y / poly.length];
+}
+
+// ---------------------------------------------------------------- collision
+const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _c = new THREE.Vector3();
+function addMesh(oct, mesh) {
+  const g = mesh.geometry, pos = g.getAttribute('position'), idx = g.index;
+  const m = mesh.matrixWorld;
+  const count = idx ? idx.count : pos.count;
+  for (let i = 0; i < count; i += 3) {
+    const i0 = idx ? idx.getX(i) : i, i1 = idx ? idx.getX(i + 1) : i + 1, i2 = idx ? idx.getX(i + 2) : i + 2;
+    _a.fromBufferAttribute(pos, i0).applyMatrix4(m);
+    _b.fromBufferAttribute(pos, i1).applyMatrix4(m);
+    _c.fromBufferAttribute(pos, i2).applyMatrix4(m);
+    const t = new THREE.Triangle(_a.clone(), _b.clone(), _c.clone());
+    if (t.getArea() > 1e-6) oct.addTriangle(t);
+  }
+}
+function addPolygon(oct, poly, z) {        // fallback slab when a floor has no collision meshes
+  const p0 = toThree(poly[0][0], poly[0][1], z);
+  for (let i = 1; i < poly.length - 1; i++) {
+    oct.addTriangle(new THREE.Triangle(p0.clone(), toThree(poly[i][0], poly[i][1], z), toThree(poly[i + 1][0], poly[i + 1][1], z)));
+  }
+}
+function octreeFor(n) {
+  if (octrees.has(n)) return octrees.get(n);
+  const oct = new Octree();
+  let tris = 0;
+  for (const k of [n - 1, n, n + 1]) {
+    if (k < 1 || k > W.num_floors) continue;
+    const list = byFloor.get(k);
+    if (list && list.length) for (const m of list) addMesh(oct, m);
+    else addPolygon(oct, F(k).slab, F(k).z);
+  }
+  if (n <= 2) {
+    if (siteMeshes.length) for (const m of siteMeshes) addMesh(oct, m);
+    else addPolygon(oct, [[-400, -400], [400, -400], [400, 400], [-400, 400]], 0);
+  }
+  tris = oct.triangles.length;
+  oct.build();
+  if (octrees.size > 6) octrees.delete(octrees.keys().next().value);
+  octrees.set(n, oct);
+  console.debug(`octree floor ${n}: ${tris} tris`);
+  return oct;
+}
+function useFloorOctree(n) {
+  if (n === octreeFloor) return;
+  octree = octreeFor(n); octreeFloor = n;
+}
+
+function collide() {
+  onFloor = false;
+  for (let iter = 0; iter < 3; iter++) {
+    const r = octree.capsuleIntersect(player);
+    if (!r) break;
+    if (r.normal.y > 0.55) {
+      onFloor = true;
+      if (velocity.y < 0) velocity.y = 0;
+    } else {
+      velocity.addScaledVector(r.normal, -r.normal.dot(velocity));
+      if (Math.abs(r.normal.y) < 0.3 && tryStepUp(r.normal)) continue;
+    }
+    if (r.depth >= 1e-6) player.translate(r.normal.multiplyScalar(r.depth));
+  }
+}
+const _test = new Capsule();
+function tryStepUp(normal) {
+  // climb a riser / kerb: lift the capsule and nudge it forward; keep it if free
+  const h = new THREE.Vector3(velocity.x, 0, velocity.z);
+  if (h.lengthSq() < 0.05 || h.dot(normal) > 0) return false;
+  h.normalize().multiplyScalar(0.06);
+  for (const up of [0.08, 0.16, 0.24, 0.32, STEP_UP]) {   // smallest step that frees us
+    _test.copy(player);
+    _test.translate(_b.set(h.x, up, h.z));
+    if (!octree.capsuleIntersect(_test)) { player.copy(_test); return true; }
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------- controls
+addEventListener('keydown', (e) => {
+  if (e.code === 'Tab') e.preventDefault();
+  keys.add(e.code);
+  if (mode === 'lift') { if (e.code === 'Escape') closeLift(); return; }
+  if (mode !== 'walk' && mode !== 'orbit') return;
+  if (e.code === 'KeyF' && mode === 'walk') toggleFly();
+  if (e.code === 'KeyH') { showHelp = !showHelp; $('hint').classList.toggle('hidden', !showHelp); }
+  if (e.code === 'KeyE' && mode === 'walk' && nearLift() < 7) openLift();
+  if (e.code === 'KeyL' && mode === 'walk') openLift();
+  if (e.code === 'KeyO') mode === 'orbit' ? startWalk() : startOrbit();
+  if (e.code === 'Space' && mode === 'walk' && !flying && onFloor) velocity.y = JUMP;
+});
+addEventListener('keyup', (e) => keys.delete(e.code));
+addEventListener('blur', () => keys.clear());
+
+document.addEventListener('mousemove', (e) => {
+  if (mode !== 'walk' || document.pointerLockElement !== canvas) return;
+  yaw -= e.movementX * 0.0022;
+  pitch = Math.max(-1.5, Math.min(1.5, pitch - e.movementY * 0.0022));
+});
+canvas.addEventListener('click', () => { if (mode === 'walk') lockPointer(); });
+document.addEventListener('pointerlockchange', () => {
+  if (document.pointerLockElement !== canvas && mode === 'walk' && !navigator.webdriver) pause();
+});
+function lockPointer() {
+  try { const p = canvas.requestPointerLock(); if (p && p.catch) p.catch(() => {}); } catch (e) { /* headless */ }
+}
+
+function pause() {
+  mode = 'menu';
+  $('overlay').classList.remove('hidden');
+  $('btn-walk').textContent = 'Resume';
+  setHud(false);
+}
+
+function setHud(on, orbitMode = false) {
+  for (const id of ['hud', 'mapwrap']) $(id).classList.toggle('hidden', !on);
+  $('hint').classList.toggle('hidden', !on || !showHelp || orbitMode);
+  $('crosshair').classList.toggle('hidden', !on || orbitMode);
+  $('orbitbar').classList.toggle('hidden', !orbitMode || isTouchOnly);
+}
+
+function startWalk() {
+  if (orbit) { orbit.enabled = false; }
+  mode = 'walk';
+  $('overlay').classList.add('hidden');
+  setHud(true);
+  camera.rotation.order = 'YXZ';
+  lockPointer();
+}
+
+function startOrbit() {
+  mode = 'orbit';
+  if (document.pointerLockElement) document.exitPointerLock();
+  $('overlay').classList.add('hidden');
+  setHud(true, true);
+  $('hud-mode').textContent = 'Orbit';
+  if (!orbit) {
+    orbit = new OrbitControls(camera, canvas);
+    orbit.enableDamping = true;
+    orbit.maxDistance = 2500; orbit.minDistance = 8;
+  }
+  orbit.enabled = true;
+  orbit.target.copy(toThree(21, 14, 120));
+  camera.position.copy(toThree(-230, -330, 210));
+  orbit.update();
+}
+
+function toggleFly() {
+  flying = !flying;
+  velocity.set(0, 0, 0);
+  $('hud-mode').textContent = flying ? 'Fly' : 'Walk';
+  toast(flying ? 'Fly mode: Space / C to go up / down, Shift for speed' : 'Walk mode');
+}
+
+let toastTimer = 0;
+function toast(msg, secs = 2.5) {
+  $('prompt').textContent = msg;
+  $('prompt').classList.remove('hidden');
+  toastTimer = secs;
+}
+
+// ---------------------------------------------------------------- lift
+function nearLift() {
+  const feetZ = player.start.y - RADIUS;
+  const f = F(floorAtZ(feetZ));
+  if (feetZ - f.z > 1.5) return Infinity;
+  return Math.hypot(player.start.x - f.lift[0], -player.start.z - f.lift[1]);
+}
+
+function buildLiftUI() {
+  const stops = $('stops'); stops.innerHTML = '';
+  for (const s of W.stops) {
+    const b = document.createElement('button');
+    b.innerHTML = `<b>${s.floor}</b>${s.label}`;
+    b.onclick = () => rideTo(s.floor);
+    stops.appendChild(b);
+  }
+  const grid = $('floors'); grid.innerHTML = '';
+  for (let n = 1; n <= W.num_floors; n++) {
+    const b = document.createElement('button');
+    b.textContent = n; b.dataset.n = n;
+    b.title = `Floor ${n} · ${F(n).z.toFixed(1)} m`;
+    b.onclick = () => rideTo(n);
+    grid.appendChild(b);
+  }
+}
+
+function openLift() {
+  mode = 'lift';
+  keys.clear();
+  if (document.pointerLockElement) document.exitPointerLock();
+  for (const b of $('floors').children) b.classList.toggle('cur', +b.dataset.n === currentFloor && !outdoors);
+  $('lift').classList.remove('hidden');
+}
+function closeLift() {
+  $('lift').classList.add('hidden');
+  mode = 'walk';
+  lockPointer();
+}
+
+function rideTo(n) {
+  $('lift').classList.add('hidden');
+  mode = 'walk';
+  lockPointer();
+  $('fade').classList.add('on');
+  setTimeout(() => {
+    teleportToFloor(n);
+    setTimeout(() => $('fade').classList.remove('on'), 120);
+    toast(`Floor ${n} · ${F(n).z.toFixed(1)} m`);
+  }, 300);
+}
+
+function setFeet(x, y, z) {               // Blender plan coordinates, feet elevation
+  const p = toThree(x, y, z);
+  player.start.set(p.x, p.y + RADIUS, p.z);
+  player.end.set(p.x, p.y + EYE - RADIUS, p.z);
+  velocity.set(0, 0, 0);
+}
+function teleportToFloor(n) {
+  const f = F(n);
+  flying = false; $('hud-mode').textContent = 'Walk';
+  setFeet(f.lift[0], f.lift[1], f.z + 0.02);
+  yaw = 0; pitch = 0;                      // face north, away from the lift doors
+  useFloorOctree(n);
+}
+
+// ---------------------------------------------------------------- update
+const _fwd = new THREE.Vector3(), _side = new THREE.Vector3(), _wish = new THREE.Vector3();
+function update(dt) {
+  if (mode === 'orbit') { orbit.update(); return; }
+  if (mode !== 'walk') return;
+  const run = keys.has('ShiftLeft') || keys.has('ShiftRight');
+  _fwd.set(-Math.sin(yaw), 0, -Math.cos(yaw));
+  _side.set(Math.cos(yaw), 0, -Math.sin(yaw));
+  _wish.set(0, 0, 0);
+  if (keys.has('KeyW') || keys.has('ArrowUp')) _wish.add(_fwd);
+  if (keys.has('KeyS') || keys.has('ArrowDown')) _wish.sub(_fwd);
+  if (keys.has('KeyD') || keys.has('ArrowRight')) _wish.add(_side);
+  if (keys.has('KeyA') || keys.has('ArrowLeft')) _wish.sub(_side);
+  if (_wish.lengthSq() > 0) _wish.normalize();
+
+  if (flying) {
+    const look = new THREE.Vector3(0, 0, -1).applyEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
+    const mv = new THREE.Vector3();
+    if (keys.has('KeyW') || keys.has('ArrowUp')) mv.add(look);
+    if (keys.has('KeyS') || keys.has('ArrowDown')) mv.sub(look);
+    if (keys.has('KeyD') || keys.has('ArrowRight')) mv.add(_side);
+    if (keys.has('KeyA') || keys.has('ArrowLeft')) mv.sub(_side);
+    if (keys.has('Space') || keys.has('KeyE')) mv.y += 1;
+    if (keys.has('KeyC') || keys.has('ControlLeft') || keys.has('KeyQ')) mv.y -= 1;
+    if (mv.lengthSq() > 0) mv.normalize();
+    player.translate(mv.multiplyScalar((run ? FLY_FAST : FLY_SPEED) * dt));
+    return;
+  }
+
+  const speed = run ? RUN_SPEED : WALK_SPEED;
+  const h = dt / SUBSTEPS;
+  for (let s = 0; s < SUBSTEPS; s++) {
+    const accel = onFloor ? 14 : 2.5;
+    const k = 1 - Math.exp(-accel * h);
+    velocity.x += (_wish.x * speed - velocity.x) * k;
+    velocity.z += (_wish.z * speed - velocity.z) * k;
+    velocity.y -= GRAVITY * h;
+    const px = player.start.x, py = -player.start.z;
+    player.translate(_a.copy(velocity).multiplyScalar(h));
+    useFloorOctree(floorAtZ(player.start.y - RADIUS));
+    collide();
+    constrainPlan(px, py);
+  }
+  if (player.start.y < -40) teleportToStreet();
+}
+
+function teleportToStreet() {
+  const s = W.spawn;
+  setFeet(s.x, s.y, s.z + 0.05);
+  yaw = 0; pitch = 0.12;
+  useFloorOctree(1);
+}
+
+// ---------------------------------------------------------------- HUD
+const mm = $('minimap'), g2 = mm.getContext('2d');
+let hudTimer = 0;
+function updateHud(dt) {
+  const feetZ = player.start.y - RADIUS;
+  const x = player.start.x, y = -player.start.z;
+  currentFloor = floorAtZ(feetZ);
+  const f = F(currentFloor);
+  outdoors = currentFloor === 1 && !insidePoly(f.slab, x, y) && feetZ < 3;
+  if (toastTimer > 0) { toastTimer -= dt; if (toastTimer <= 0) $('prompt').classList.add('hidden'); }
+  else if (mode === 'walk') {
+    const d = nearLift();
+    if (d < 4 && !flying) { $('prompt').textContent = 'Press E to take the lift'; $('prompt').classList.remove('hidden'); }
+    else $('prompt').classList.add('hidden');
+  }
+  hudTimer -= dt;
+  if (hudTimer > 0) return;
+  hudTimer = 0.1;
+  const z = mode === 'orbit' ? camera.position.y : Math.max(0, feetZ);
+  let label, use = '';
+  if (mode === 'orbit') label = 'Overview';
+  else if (flying && (outdoors || !insidePoly(f.slab, x, y))) label = 'Above Midtown';
+  else if (outdoors) label = y < -16 ? 'W 53rd St · south side' : y < -6 ? 'W 53rd St' : 'Sidewalk';
+  else {
+    label = currentFloor === 1 ? 'Lobby' : `Floor ${currentFloor}`;
+    use = { lobby: 'Ground floor', moma: 'MoMA gallery', pool: 'Pool', amenity: 'Amenity', penthouse: 'Penthouse', residential: 'Residences' }[f.use] || '';
+  }
+  $('hud-floor').textContent = label;
+  $('hud-meta').textContent = `${z.toFixed(1)} m · ${Math.round(z * 3.28084)} ft${use ? ' · ' + use : ''}`;
+  drawMinimap(x, y, f);
+}
+
+function drawMinimap(px, py, f) {
+  const Wc = mm.width, Hc = mm.height;
+  g2.clearRect(0, 0, Wc, Hc);
+  const showStreet = outdoors || currentFloor === 1;
+  const bx0 = -6, bx1 = 49, by0 = showStreet ? -23 : -2, by1 = 32;
+  const s = Math.min((Wc - 16) / (bx1 - bx0), (Hc - 16) / (by1 - by0));
+  const ox = (Wc - (bx1 - bx0) * s) / 2, oy = (Hc - (by1 - by0) * s) / 2;
+  const X = (x) => ox + (x - bx0) * s, Y = (y) => Hc - oy - (y - by0) * s;
+  const css = getComputedStyle(document.documentElement);
+  const col = (n) => css.getPropertyValue(n).trim();
+  if (showStreet) {
+    g2.fillStyle = 'rgba(255,255,255,0.07)';
+    g2.fillRect(X(bx0), Y(0), (bx1 - bx0) * s, 6 * s);          // north sidewalk
+    g2.fillRect(X(bx0), Y(-16), (bx1 - bx0) * s, 6 * s);        // south sidewalk
+    g2.fillStyle = 'rgba(0,0,0,0.25)';
+    g2.fillRect(X(bx0), Y(-6), (bx1 - bx0) * s, 10 * s);        // roadway
+  }
+  const path = (poly) => { g2.beginPath(); poly.forEach(([x, y], i) => i ? g2.lineTo(X(x), Y(y)) : g2.moveTo(X(x), Y(y))); g2.closePath(); };
+  path(W.footprint); g2.strokeStyle = 'rgba(255,255,255,0.12)'; g2.lineWidth = 1; g2.stroke();
+  path(f.slab); g2.fillStyle = 'rgba(127,179,201,0.16)'; g2.fill();
+  g2.strokeStyle = col('--glass'); g2.lineWidth = 1.5; g2.stroke();
+  const rect = (r, c) => { g2.fillStyle = c; g2.fillRect(X(r[0]), Y(r[3]), (r[2] - r[0]) * s, (r[3] - r[1]) * s); };
+  rect(f.core, col('--core'));
+  rect(f.stair, col('--stair'));
+  if (showStreet) {                                                 // entrance gap
+    const [e0, e1] = W.entrance.opening_x;
+    g2.strokeStyle = col('--accent'); g2.lineWidth = 3;
+    g2.beginPath(); g2.moveTo(X(e0), Y(0)); g2.lineTo(X(e1), Y(0)); g2.stroke();
+  }
+  g2.fillStyle = col('--accent');
+  g2.beginPath(); g2.arc(X(f.lift[0]), Y(f.lift[1]), 3, 0, Math.PI * 2); g2.fill();
+  // player with heading wedge
+  const hx = -Math.sin(yaw), hy = Math.cos(yaw);
+  const cx = X(Math.max(bx0, Math.min(bx1, px))), cy = Y(Math.max(by0, Math.min(by1, py)));
+  g2.fillStyle = 'rgba(255,255,255,0.18)';
+  g2.beginPath(); g2.moveTo(cx, cy);
+  const a = Math.atan2(-hy, hx);
+  g2.arc(cx, cy, 22, a - 0.5, a + 0.5); g2.closePath(); g2.fill();
+  g2.fillStyle = '#fff';
+  g2.beginPath(); g2.arc(cx, cy, 4, 0, Math.PI * 2); g2.fill();
+  g2.font = '600 18px system-ui, sans-serif'; g2.fillStyle = col('--muted');
+  g2.fillText('N', Wc - 22, 22);
+}
+
+// ---------------------------------------------------------------- main loop
+function ready() {
+  buildLiftUI();
+  teleportToStreet();
+  const loading = $('loading');
+  if (loading && (W.files || []).length <= 1) loading.classList.add('hidden');
+  $('btn-walk').disabled = isTouchOnly;
+  $('btn-orbit').disabled = false;
+  if (isTouchOnly) { $('mobile-note').classList.remove('hidden'); startOrbit(); }
+}
+$('btn-walk').onclick = () => startWalk();
+$('btn-orbit').onclick = () => startOrbit();
+$('btn-orbit-walk').onclick = () => startWalk();
+$('lift-close').onclick = () => closeLift();
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(0.05, clock.getDelta());
+  if (W && octree) {
+    update(dt);
+    if (mode !== 'orbit') {
+      camera.position.set(player.end.x, player.end.y + RADIUS, player.end.z);
+      camera.rotation.set(pitch, yaw, 0, 'YXZ');
+    }
+    updateHud(dt);
+  }
+  renderer.render(scene, camera);
+});
+
+// Small hook for automated tests / the console.
+window.walk53 = {
+  get state() { return { mode, flying, floor: currentFloor, outdoors, onFloor,
+    pos: { x: player.start.x, y: -player.start.z, z: player.start.y - RADIUS }, yaw, pitch }; },
+  start: () => startWalk(), orbit: () => startOrbit(),
+  ride: (n) => teleportToFloor(n), openLift: () => openLift(),
+  look: (y, p = 0) => { yaw = y; pitch = p; },
+  setFeet: (x, y, z) => { setFeet(x, y, z); useFloorOctree(floorAtZ(z)); },
+  press: (code, on = true) => on ? keys.add(code) : keys.delete(code),
+  three: { THREE, scene, camera, renderer },
+  sim: (seconds, dt = 1 / 60) => { for (let t = 0; t < seconds; t += dt) update(dt); return window.walk53.state; },
+};
+
+boot();
+</script>
+</body>
+</html>

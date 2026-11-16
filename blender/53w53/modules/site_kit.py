@@ -34,6 +34,7 @@ COLORS = {
     "Soil":             (0.16, 0.12, 0.09, 1),
     "Kiosk_Green":      (0.12, 0.28, 0.20, 1),
     "Garden_Paving":    (0.70, 0.68, 0.64, 1),
+    "Pool_Dark":        (0.10, 0.20, 0.24, 1),
 }
 
 
@@ -155,11 +156,21 @@ def wheel_vf(x, y0, y1, r, z, n=8):
 
 
 _ICO = None
+_ICO0 = None
 
 
-def ico_vf():
-    """Unit icosphere (subdiv 1, 80 tris), cached."""
-    global _ICO
+def ico_vf(level=1):
+    """Unit icosphere (subdiv 1, 80 tris; level 0: icosahedron), cached."""
+    global _ICO, _ICO0
+    if level == 0:
+        if _ICO0 is None:
+            t = (1 + 5 ** 0.5) / 2
+            v = [(-1, t, 0), (1, t, 0), (-1, -t, 0), (1, -t, 0), (0, -1, t), (0, 1, t),
+                 (0, -1, -t), (0, 1, -t), (t, 0, -1), (t, 0, 1), (-t, 0, -1), (-t, 0, 1)]
+            L = math.sqrt(1 + t * t)
+            ico_vf(1)
+            _ICO0 = ([tuple(c / L for c in p) for p in v], _ICO[2])
+        return _ICO0[0], _ICO0[1]
     if _ICO is None:
         t = (1 + 5 ** 0.5) / 2
         v = [(-1, t, 0), (1, t, 0), (-1, -t, 0), (1, -t, 0), (0, -1, t), (0, 1, t),
@@ -182,8 +193,8 @@ def ico_vf():
         for a, b, c in f:
             ab, bc, ca = mid(a, b), mid(b, c), mid(c, a)
             nf += [(a, ab, ca), (b, bc, ab), (c, ca, bc), (ab, bc, ca)]
-        _ICO = (v, nf)
-    return _ICO
+        _ICO = (v, nf, f)
+    return _ICO[0], _ICO[1]
 
 
 # ---------------------------------------------------------------- facades
