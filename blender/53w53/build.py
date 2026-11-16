@@ -19,6 +19,7 @@ import bpy  # noqa: E402
 import config  # noqa: E402
 
 MODULES = ["exterior", "interiors", "site", "walk"]
+POST = ["materials", "lighting"]   # photoreal PBR materials, sky/sun/exposure
 
 
 def parse_args():
@@ -60,6 +61,16 @@ def main():
         importlib.reload(mod)
         mod.build(ctx)
         print(f"[build] {name}: {time.time() - t:.1f}s, objects={len(bpy.data.objects)}")
+    # Realism passes: run after geometry so they see every object/material.
+    for name in POST:
+        try:
+            mod = importlib.import_module("modules." + name)
+        except ModuleNotFoundError:
+            continue
+        importlib.reload(mod)
+        t = time.time()
+        mod.apply(ctx)
+        print(f"[build] {name}: {time.time() - t:.1f}s")
     tag = "" if not only else "_" + "-".join(only)
     blend = os.path.join(ctx["out"], f"53W53{tag}.blend")
     bpy.ops.wm.save_as_mainfile(filepath=blend, compress=True)
